@@ -41,6 +41,7 @@ public sealed partial class SemanticAnalyzer
         public IReadOnlyCollection<VariableSymbol> Fields => _fields.Values;
 
         public IReadOnlyList<ConstructorSymbol> Constructors => _constructors;
+        public IEnumerable<MethodSymbol> AllMethods => _methods.Values.SelectMany(methods => methods);
 
         public void RegisterMethod(MethodDeclarationNode node, TypeSymbol returnType, IReadOnlyList<ParameterSymbol> parameters)
         {

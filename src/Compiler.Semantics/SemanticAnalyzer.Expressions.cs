@@ -13,34 +13,46 @@ public sealed partial class SemanticAnalyzer
         switch (expression)
         {
             // Литералы возвращают предопределённые типы.
-            case IntegerLiteralNode:
-                return TypeSymbol.Integer;
+            case IntegerLiteralNode integerLiteral:
+                return Annotate(integerLiteral, TypeSymbol.Integer);
 
-            case RealLiteralNode:
-                return TypeSymbol.Real;
+            case RealLiteralNode realLiteral:
+                return Annotate(realLiteral, TypeSymbol.Real);
 
-            case BooleanLiteralNode:
-                return TypeSymbol.Boolean;
+            case BooleanLiteralNode booleanLiteral:
+                return Annotate(booleanLiteral, TypeSymbol.Boolean);
 
             // Идентификатор или this берётся из текущей области видимости/класса
             case IdentifierNode identifier:
-                return ResolveIdentifierType(identifier, scope, classSymbol);
+            {
+                var type = ResolveIdentifierType(identifier, scope, classSymbol);
+                return Annotate(identifier, type);
+            }
 
-            case ThisNode:
-                return new TypeSymbol(classSymbol.Name);
+            case ThisNode thisNode:
+                return Annotate(thisNode, new TypeSymbol(classSymbol.Name));
 
             // Вызовы конструктора и функций анализируются через отдельные методы.
             case ConstructorCallNode constructorCall:
-                return AnalyzeConstructorCall(constructorCall, scope, classSymbol, context, loopDepth);
+            {
+                var constructedType = AnalyzeConstructorCall(constructorCall, scope, classSymbol, context, loopDepth);
+                return Annotate(constructorCall, constructedType);
+            }
 
             case CallNode call:
-                return AnalyzeCallExpression(call, scope, classSymbol, context, loopDepth);
+            {
+                var returnType = AnalyzeCallExpression(call, scope, classSymbol, context, loopDepth);
+                return Annotate(call, returnType);
+            }
 
             case MemberAccessNode memberAccess:
-                return ResolveMemberAccessType(memberAccess, scope, classSymbol, context);
+            {
+                var memberType = ResolveMemberAccessType(memberAccess, scope, classSymbol, context);
+                return Annotate(memberAccess, memberType);
+            }
 
             default:
-                return TypeSymbol.Unknown;
+                return Annotate(expression, TypeSymbol.Unknown);
         }
     }
 

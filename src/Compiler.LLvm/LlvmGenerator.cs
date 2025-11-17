@@ -4,19 +4,25 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using Compiler.Ast;
+using Compiler.Semantics;
 
 namespace Compiler.LLvm;
 
-/// <summary>
-/// Traverses the parsed AST and emits a very small LLVM IR subset.
-/// The generator currently understands:
-///  * Struct layouts based on class fields (limited type inference).
-///  * Methods with expression bodies or a single return statement returning a literal.
-/// Unsupported constructs are replaced with reasonable fallbacks so the resulting IR
-/// still validates, making it easy to extend coverage incrementally.
-/// </summary>
 public sealed class LlvmGenerator
 {
+    private readonly SemanticModel _semanticModel;
+    private readonly Dictionary<string, ClassLayout> _layouts = new(StringComparer.Ordinal);
+    private int _nextClassId;
+
+    private static readonly SemanticType IntegerType = new(BuiltInTypes.Integer.Name, false, false);
+    private static readonly SemanticType RealType = new(BuiltInTypes.Real.Name, false, false);
+    private static readonly SemanticType BooleanType = new(BuiltInTypes.Boolean.Name, false, false);
+
+    public LlvmGenerator(SemanticModel semanticModel)
+    {
+        _semanticModel = semanticModel ?? throw new ArgumentNullException(nameof(semanticModel));
+    }
+
     public string Generate(ProgramNode program)
     {
         if (program is null)
@@ -24,60 +30,247 @@ public sealed class LlvmGenerator
             throw new ArgumentNullException(nameof(program));
         }
 
+        var layouts = BuildLayouts(program);
         var builder = new StringBuilder();
         builder.AppendLine("; ModuleID = 'languageOcompiler'");
-        builder.AppendLine("source_filename = \"languageO\""); // helps llc/lli error messages
+        builder.AppendLine("source_filename = \"languageO\"");
+        builder.AppendLine("declare i8* @malloc(i64)");
         builder.AppendLine();
 
-        foreach (var classNode in program.Classes)
-        {
-            EmitClassLayout(builder, classNode);
-        }
-
-        if (program.Classes.Count > 0)
-        {
-            builder.AppendLine();
-        }
-
-        foreach (var classNode in program.Classes)
-        {
-            foreach (var method in classNode.Members.OfType<MethodDeclarationNode>())
-            {
-                EmitMethod(builder, classNode, method);
-            }
-        }
+        EmitTypeDefinitions(builder, layouts);
+        builder.AppendLine();
+        EmitConstructors(builder, layouts);
+        EmitMethods(builder, layouts);
+        EmitProgramEntry(builder, layouts, program);
 
         return builder.ToString();
     }
 
-    private void EmitClassLayout(StringBuilder builder, ClassNode classNode)
+    private IReadOnlyDictionary<string, ClassLayout> BuildLayouts(ProgramNode program)
     {
-        var fieldTypes = classNode.Members
-            .OfType<VariableDeclarationNode>()
-            .Select(InferFieldType)
-            .ToList();
+        _layouts.Clear();
+        _nextClassId = 0;
 
-        var layout = fieldTypes.Count == 0
-            ? "{}"
-            : string.Join(", ", fieldTypes);
+        foreach (var classNode in program.Classes)
+        {
+            if (_semanticModel.Classes.TryGetValue(classNode.Name, out var semanticClass))
+            {
+                EnsureLayout(semanticClass);
+            }
+        }
 
-        builder.Append('%');
-        builder.Append(classNode.Name);
-        builder.Append(" = type { ");
-        builder.Append(layout);
-        builder.AppendLine(" }");
+        return _layouts;
     }
 
-    private void EmitMethod(StringBuilder builder, ClassNode classNode, MethodDeclarationNode method)
+    private ClassLayout EnsureLayout(SemanticClass semanticClass)
     {
-        // Forward declaration: skip code generation, a full definition must exist elsewhere
-        if (method.Body is null)
+        if (_layouts.TryGetValue(semanticClass.Name, out var cached))
+        {
+            return cached;
+        }
+
+        var inheritedFields = new List<FieldLayout>();
+        ClassLayout? baseLayout = null;
+
+        if (semanticClass.BaseClass is not null &&
+            _semanticModel.Classes.TryGetValue(semanticClass.BaseClass, out var baseClass))
+        {
+            baseLayout = EnsureLayout(baseClass);
+            foreach (var baseField in baseLayout.Fields)
+            {
+                inheritedFields.Add(baseField with { Index = inheritedFields.Count });
+            }
+        }
+        else
+        {
+            inheritedFields.Add(new FieldLayout("__classId", "i32", IntegerType, 0, true));
+        }
+
+        var fields = new List<FieldLayout>(inheritedFields);
+
+        foreach (var field in semanticClass.Fields)
+        {
+            fields.Add(new FieldLayout(field.Name, ResolveTypeName(field.Type), field.Type, fields.Count, false));
+        }
+
+        var layout = new ClassLayout(semanticClass, ++_nextClassId, fields, baseLayout);
+        _layouts[semanticClass.Name] = layout;
+        baseLayout?.DerivedClasses.Add(layout);
+
+        if (baseLayout is not null)
+        {
+            foreach (var (key, value) in baseLayout.Methods)
+            {
+                layout.Methods[key] = value;
+            }
+        }
+
+        foreach (var method in semanticClass.Methods)
+        {
+            var signature = CreateMethodSignature(method);
+            layout.Methods[signature] = new MethodImplementation(layout, method);
+        }
+
+        return layout;
+    }
+
+    private void EmitTypeDefinitions(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts)
+    {
+        foreach (var layout in layouts.Values.OrderBy(l => l.ClassId))
+        {
+            var fieldList = layout.Fields.Count == 0
+                ? string.Empty
+                : string.Join(", ", layout.Fields.Select(field => field.LlvmType));
+
+            builder.Append('%');
+            builder.Append(layout.Name);
+            builder.Append(" = type { ");
+            builder.Append(fieldList);
+            builder.AppendLine(" }");
+        }
+    }
+
+    private void EmitConstructors(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts)
+    {
+        foreach (var layout in layouts.Values.OrderBy(l => l.ClassId))
+        {
+            foreach (var ctor in layout.SemanticClass.Constructors)
+            {
+                EmitConstructor(builder, layout, ctor);
+            }
+        }
+    }
+
+    private void EmitMethods(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts)
+    {
+        foreach (var layout in layouts.Values.OrderBy(l => l.ClassId))
+        {
+            foreach (var method in layout.SemanticClass.Methods)
+            {
+                EmitMethod(builder, layout, method);
+            }
+        }
+    }
+
+    private void EmitProgramEntry(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts, ProgramNode program)
+    {
+        builder.AppendLine("define i32 @main()");
+        builder.AppendLine("{");
+        builder.AppendLine("entry:");
+
+        var startClass = DetermineStartClass(layouts, program);
+
+        if (startClass is null)
+        {
+            builder.AppendLine("  ret i32 0");
+            builder.AppendLine("}");
+            builder.AppendLine();
+            return;
+        }
+
+        builder.Append("  %size_ptr = getelementptr %");
+        builder.Append(startClass.Name);
+        builder.Append(", %");
+        builder.Append(startClass.Name);
+        builder.AppendLine("* null, i32 1");
+
+        builder.Append("  %size = ptrtoint %");
+        builder.Append(startClass.Name);
+        builder.AppendLine("* %size_ptr to i64");
+
+        builder.AppendLine("  %raw = call i8* @malloc(i64 %size)");
+
+        builder.Append("  %obj = bitcast i8* %raw to %");
+        builder.Append(startClass.Name);
+        builder.AppendLine("*");
+
+        builder.Append("  %class_id_ptr = getelementptr %");
+        builder.Append(startClass.Name);
+        builder.Append(", %");
+        builder.Append(startClass.Name);
+        builder.AppendLine("* %obj, i32 0, i32 0");
+
+        builder.Append("  store i32 ");
+        builder.Append(startClass.ClassId);
+        builder.AppendLine(", i32* %class_id_ptr");
+
+        var ctor = startClass.SemanticClass.Constructors.FirstOrDefault(c => c.Parameters.Count == 0);
+        if (ctor is not null)
+        {
+            var ctorName = MangleConstructorName(startClass, ctor);
+            builder.Append("  call void ");
+            builder.Append(ctorName);
+            builder.Append("(%");
+            builder.Append(startClass.Name);
+            builder.AppendLine("* %obj)");
+        }
+        else
+        {
+            builder.AppendLine("  ; No parameterless constructor found, skipping invocation");
+        }
+
+        builder.AppendLine("  ret i32 0");
+        builder.AppendLine("}");
+        builder.AppendLine();
+    }
+
+    private ClassLayout? DetermineStartClass(IReadOnlyDictionary<string, ClassLayout> layouts, ProgramNode program)
+    {
+        if (layouts.TryGetValue("Main", out var main))
+        {
+            return main;
+        }
+
+        foreach (var classNode in program.Classes)
+        {
+            if (layouts.TryGetValue(classNode.Name, out var layout))
+            {
+                return layout;
+            }
+        }
+
+        return null;
+    }
+
+    private void EmitConstructor(StringBuilder builder, ClassLayout layout, SemanticConstructor ctor)
+    {
+        var parameters = new List<string>
+        {
+            $"%{layout.Name}* %this",
+        };
+
+        foreach (var parameter in ctor.Parameters)
+        {
+            parameters.Add($"{ResolveTypeName(parameter.Type)} %{Sanitize(parameter.Name)}");
+        }
+
+        var mangledName = MangleConstructorName(layout, ctor);
+        builder.Append("define void ");
+        builder.Append(mangledName);
+        builder.Append('(');
+        builder.Append(string.Join(", ", parameters));
+        builder.AppendLine(") {");
+        builder.AppendLine("entry:");
+
+        var emitter = new FunctionEmitter(builder);
+        var context = FunctionContext.ForConstructor(layout, ctor, emitter);
+        InitializeParameters(context, ctor.Parameters);
+        EmitBody(context, ctor.Declaration.Body);
+        EnsureFunctionTermination(context, "void");
+
+        builder.AppendLine("}");
+        builder.AppendLine();
+    }
+
+    private void EmitMethod(StringBuilder builder, ClassLayout layout, SemanticMethod method)
+    {
+        if (method.Declaration.Body is null)
         {
             return;
         }
 
-        var returnType = ResolveType(method.ReturnType);
-        var signature = BuildSignature(classNode, method, returnType);
+        var returnType = ResolveTypeName(method.ReturnType);
+        var signature = BuildSignature(layout, method);
 
         builder.Append("define ");
         builder.Append(returnType);
@@ -86,217 +279,987 @@ public sealed class LlvmGenerator
         builder.AppendLine(" {");
         builder.AppendLine("entry:");
 
-        if (returnType == "void")
-        {
-            builder.AppendLine("  ret void");
-            builder.AppendLine("}");
-            builder.AppendLine();
-            return;
-        }
-
-        var returnExpression = ExtractReturnExpression(method);
-        if (returnExpression is not null && TryEmitLiteral(returnExpression, out var literalType, out var literalValue))
-        {
-            if (literalType == returnType)
-            {
-                builder.Append("  ret ");
-                builder.Append(returnType);
-                builder.Append(' ');
-                builder.AppendLine(literalValue);
-            }
-            else
-            {
-                builder.Append("  ; literal type mismatch (");
-                builder.Append(literalType);
-                builder.Append(" -> ");
-                builder.Append(returnType);
-                builder.AppendLine("), returning default");
-                builder.Append("  ret ");
-                builder.Append(returnType);
-                builder.Append(' ');
-                builder.AppendLine(GetDefaultValue(returnType));
-            }
-        }
-        else
-        {
-            builder.AppendLine("  ; unsupported body, emitting default literal");
-            builder.Append("  ret ");
-            builder.Append(returnType);
-            builder.Append(' ');
-            builder.AppendLine(GetDefaultValue(returnType));
-        }
+        var emitter = new FunctionEmitter(builder);
+        var context = FunctionContext.ForMethod(layout, method, emitter);
+        InitializeParameters(context, method.Parameters);
+        EmitMethodBody(context, method.Declaration.Body);
+        EnsureFunctionTermination(context, returnType);
 
         builder.AppendLine("}");
         builder.AppendLine();
     }
 
-    private static string MangleMethodName(ClassNode classNode, MethodDeclarationNode method)
+    private void EmitMethodBody(FunctionContext context, MethodBodyNode body)
     {
-        var sb = new StringBuilder();
-        sb.Append(classNode.Name);
-        sb.Append('_');
-        sb.Append(method.Name);
-
-        if (method.Parameters.Count > 0)
+        switch (body)
         {
-            sb.Append("__");
-            for (var i = 0; i < method.Parameters.Count; i++)
+            case ExpressionBodyNode expressionBody:
             {
-                if (i > 0)
+                var value = EmitExpression(context, expressionBody.Expression);
+                EmitReturn(context, value);
+                break;
+            }
+
+            case BlockBodyNode blockBody:
+            {
+                EmitBody(context, blockBody.Body);
+                break;
+            }
+        }
+    }
+
+    private void EmitBody(FunctionContext context, BodyNode body)
+    {
+        foreach (var item in body.Items)
+        {
+            if (context.Emitter.IsCurrentBlockTerminated)
+            {
+                break;
+            }
+
+            switch (item)
+            {
+                case VariableDeclarationNode local:
+                    EmitLocalDeclaration(context, local);
+                    break;
+
+                case Statement statement:
+                    EmitStatement(context, statement);
+                    break;
+            }
+        }
+    }
+
+    private void EmitLocalDeclaration(FunctionContext context, VariableDeclarationNode local)
+    {
+        if (!_semanticModel.VariableTypes.TryGetValue(local, out var semanticType))
+        {
+            return;
+        }
+
+        var value = EmitExpression(context, local.InitialValue);
+        var slot = context.DeclareVariable(local.Name, semanticType);
+        StoreValue(context, value, slot.Pointer, slot.LlvmType);
+    }
+
+    private void EmitStatement(FunctionContext context, Statement statement)
+    {
+        switch (statement)
+        {
+            case AssignmentNode assignment:
+                EmitAssignment(context, assignment);
+                break;
+
+            case IfStatementNode ifStatement:
+                EmitIf(context, ifStatement);
+                break;
+
+            case WhileLoopNode whileLoop:
+                EmitWhile(context, whileLoop);
+                break;
+
+            case ReturnStatementNode returnStatement:
+                EmitReturn(context, returnStatement);
+                break;
+
+            default:
+                context.Emitter.EmitRaw($"; Unsupported statement '{statement.GetType().Name}'");
+                break;
+        }
+    }
+
+    private void EmitAssignment(FunctionContext context, AssignmentNode assignment)
+    {
+        var value = EmitExpression(context, assignment.Value);
+        var (pointer, llvmType) = GetAssignmentTarget(context, assignment.Target);
+
+        if (string.IsNullOrEmpty(pointer))
+        {
+            context.Emitter.EmitRaw("; Failed to resolve assignment target");
+            return;
+        }
+
+        StoreValue(context, value, pointer, llvmType);
+    }
+
+    private (string Pointer, string LlvmType) GetAssignmentTarget(FunctionContext context, Expression target)
+    {
+        switch (target)
+        {
+            case IdentifierNode identifier:
+            {
+                if (context.TryGetVariable(identifier.Name, out var slot))
                 {
-                    sb.Append('_');
+                    return (slot.Pointer, slot.LlvmType);
                 }
 
-                var pType = method.Parameters[i].Type;
-                sb.Append(Sanitize(GetMangleTypeName(pType)));
+                var fieldPointer = GetFieldPointer(context, context.ThisValue, identifier.Name, out var fieldLayout);
+                return (fieldPointer, fieldLayout?.LlvmType ?? "");
+            }
+
+            case MemberAccessNode memberAccess:
+            {
+                var instance = EmitExpression(context, memberAccess.Target);
+                var fieldPointer = GetFieldPointer(context, instance, memberAccess.MemberName, out var fieldLayout);
+                return (fieldPointer, fieldLayout?.LlvmType ?? "");
             }
         }
 
-        return "@" + sb.ToString();
+        return (string.Empty, string.Empty);
     }
 
-    private static string GetMangleTypeName(TypeNode? typeNode)
+    private void EmitIf(FunctionContext context, IfStatementNode ifStatement)
     {
-        return typeNode switch
-        {
-            null => "void",
-            ArrayTypeNode => "Array",
-            ListTypeNode => "List",
-            _ => typeNode.Name,
-        };
-    }
+        var condition = EmitExpression(context, ifStatement.Condition);
+        var conditionValue = EnsureBoolean(context, condition);
 
-    private string BuildSignature(ClassNode classNode, MethodDeclarationNode method, string returnType)
-    {
-        var parameterList = new List<string>
-        {
-            $"%{classNode.Name}* %this"
-        };
+        var thenLabel = context.Emitter.NewLabel("then");
+        var elseLabel = ifStatement.ElseBranch is null
+            ? null
+            : context.Emitter.NewLabel("else");
+        var mergeLabel = context.Emitter.NewLabel("endif");
 
-        foreach (var parameter in method.Parameters)
+        var falseTarget = elseLabel ?? mergeLabel;
+        context.Emitter.EmitRaw($"br i1 {conditionValue}, label %{thenLabel}, label %{falseTarget}");
+
+        context.Emitter.EmitLabel(thenLabel);
+        EmitBody(context, ifStatement.ThenBranch);
+        if (!context.Emitter.IsCurrentBlockTerminated)
         {
-            var llvmType = ResolveType(parameter.Type);
-            parameterList.Add($"{llvmType} %{Sanitize(parameter.Name)}");
+            context.Emitter.EmitRaw($"br label %{mergeLabel}");
+            context.Emitter.MarkTerminated();
         }
 
-        var mangledName = MangleMethodName(classNode, method);
-        return $"{mangledName}({string.Join(", ", parameterList)})";
-    }
-
-    private string InferFieldType(VariableDeclarationNode field)
-    {
-        var inferred = InferTypeFromExpression(field.InitialValue)
-            ?? field.ResolvedType?.Name
-            ?? "opaque";
-
-        return ResolveTypeName(inferred, treatAsPointerForCustomType: true);
-    }
-
-    private static string? InferTypeFromExpression(Expression expression)
-    {
-        return expression switch
+        if (elseLabel is not null)
         {
-            IntegerLiteralNode => "Integer",
-            RealLiteralNode => "Real",
-            BooleanLiteralNode => "Boolean",
-            ConstructorCallNode ctor => ctor.ClassName,
-            _ => null,
-        };
-    }
-
-    private Expression? ExtractReturnExpression(MethodDeclarationNode method)
-    {
-        if (method.Body is ExpressionBodyNode expressionBody)
-        {
-            return expressionBody.Expression;
-        }
-
-        if (method.Body is BlockBodyNode blockBody)
-        {
-            foreach (var item in blockBody.Body.Items)
+            context.Emitter.EmitLabel(elseLabel);
+            EmitBody(context, ifStatement.ElseBranch!);
+            if (!context.Emitter.IsCurrentBlockTerminated)
             {
-                if (item is ReturnStatementNode { Value: { } value })
+                context.Emitter.EmitRaw($"br label %{mergeLabel}");
+                context.Emitter.MarkTerminated();
+            }
+        }
+
+        context.Emitter.EmitLabel(mergeLabel);
+    }
+
+    private void EmitWhile(FunctionContext context, WhileLoopNode whileLoop)
+    {
+        var conditionLabel = context.Emitter.NewLabel("while_cond");
+        var bodyLabel = context.Emitter.NewLabel("while_body");
+        var exitLabel = context.Emitter.NewLabel("while_exit");
+
+        context.Emitter.EmitRaw($"br label %{conditionLabel}");
+        context.Emitter.EmitLabel(conditionLabel);
+
+        var condition = EmitExpression(context, whileLoop.Condition);
+        var conditionValue = EnsureBoolean(context, condition);
+        context.Emitter.EmitRaw($"br i1 {conditionValue}, label %{bodyLabel}, label %{exitLabel}");
+
+        context.Emitter.EmitLabel(bodyLabel);
+        EmitBody(context, whileLoop.Body);
+        if (!context.Emitter.IsCurrentBlockTerminated)
+        {
+            context.Emitter.EmitRaw($"br label %{conditionLabel}");
+            context.Emitter.MarkTerminated();
+        }
+
+        context.Emitter.EmitLabel(exitLabel);
+    }
+
+    private void EmitReturn(FunctionContext context, ReturnStatementNode statement)
+    {
+        if (statement.Value is null)
+        {
+            context.Emitter.EmitRaw("ret void");
+            context.Emitter.MarkTerminated();
+            return;
+        }
+
+        var value = EmitExpression(context, statement.Value);
+        EmitReturn(context, value);
+    }
+
+    private void EmitReturn(FunctionContext context, LlvmValue value)
+    {
+        if (context.ReturnType.IsVoid)
+        {
+            context.Emitter.EmitRaw("ret void");
+        }
+        else
+        {
+            var expectedType = ResolveTypeName(context.ReturnType);
+            if (!string.Equals(expectedType, value.LlvmType, StringComparison.Ordinal))
+            {
+                value = ConvertValue(context, value, context.ReturnType);
+            }
+
+            context.Emitter.EmitRaw($"ret {expectedType} {value.Register}");
+        }
+
+        context.Emitter.MarkTerminated();
+    }
+
+    private void EnsureFunctionTermination(FunctionContext context, string returnType)
+    {
+        if (context.Emitter.IsCurrentBlockTerminated)
+        {
+            return;
+        }
+
+        if (returnType == "void")
+        {
+            context.Emitter.EmitRaw("ret void");
+        }
+        else
+        {
+            context.Emitter.EmitRaw($"ret {returnType} {GetDefaultValue(returnType)}");
+        }
+
+        context.Emitter.MarkTerminated();
+    }
+
+    private void InitializeParameters(FunctionContext context, IReadOnlyList<SemanticParameter> parameters)
+    {
+        foreach (var parameter in parameters)
+        {
+            var slot = context.DeclareVariable(parameter.Name, parameter.Type);
+            var llvmParamName = $"%{Sanitize(parameter.Name)}";
+            context.Emitter.EmitRaw($"store {slot.LlvmType} {llvmParamName}, {slot.LlvmType}* {slot.Pointer}");
+        }
+    }
+
+    private LlvmValue EmitExpression(FunctionContext context, Expression expression)
+    {
+        var semanticType = _semanticModel.GetExpressionType(expression);
+
+        switch (expression)
+        {
+            case IntegerLiteralNode integerLiteral:
+                return new LlvmValue(integerLiteral.Value.ToString(CultureInfo.InvariantCulture), "i32", semanticType);
+
+            case RealLiteralNode realLiteral:
+                return new LlvmValue(realLiteral.Value.ToString(CultureInfo.InvariantCulture), "double", semanticType);
+
+            case BooleanLiteralNode booleanLiteral:
+                return new LlvmValue(booleanLiteral.Value ? "1" : "0", "i1", semanticType);
+
+            case ThisNode:
+                return context.ThisValue;
+
+            case IdentifierNode identifier:
+                return LoadIdentifier(context, identifier, semanticType);
+
+            case MemberAccessNode memberAccess:
+                return LoadMemberAccess(context, memberAccess, semanticType);
+
+            case ConstructorCallNode constructorCall:
+                return EmitConstructorCall(context, constructorCall, semanticType);
+
+            case CallNode callNode:
+                return EmitCall(context, callNode, semanticType);
+        }
+
+        context.Emitter.EmitRaw($"; Unsupported expression '{expression.GetType().Name}'");
+        return new LlvmValue(GetDefaultValue(ResolveTypeName(semanticType)), ResolveTypeName(semanticType), semanticType);
+    }
+
+    private LlvmValue LoadIdentifier(FunctionContext context, IdentifierNode identifier, SemanticType semanticType)
+    {
+        if (context.TryGetVariable(identifier.Name, out var slot))
+        {
+            var register = context.Emitter.EmitAssignment($"load {slot.LlvmType}, {slot.LlvmType}* {slot.Pointer}");
+            return new LlvmValue(register, slot.LlvmType, slot.SemanticType);
+        }
+
+        var fieldPointer = GetFieldPointer(context, context.ThisValue, identifier.Name, out var layout);
+        if (layout is null)
+        {
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(semanticType)), ResolveTypeName(semanticType), semanticType);
+        }
+
+        var registerName = context.Emitter.EmitAssignment($"load {layout.LlvmType}, {layout.LlvmType}* {fieldPointer}");
+        return new LlvmValue(registerName, layout.LlvmType, layout.SemanticType);
+    }
+
+    private LlvmValue LoadMemberAccess(FunctionContext context, MemberAccessNode memberAccess, SemanticType semanticType)
+    {
+        var instance = EmitExpression(context, memberAccess.Target);
+        var fieldPointer = GetFieldPointer(context, instance, memberAccess.MemberName, out var layout);
+        if (layout is null)
+        {
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(semanticType)), ResolveTypeName(semanticType), semanticType);
+        }
+
+        var register = context.Emitter.EmitAssignment($"load {layout.LlvmType}, {layout.LlvmType}* {fieldPointer}");
+        return new LlvmValue(register, layout.LlvmType, layout.SemanticType);
+    }
+
+    private LlvmValue EmitConstructorCall(FunctionContext context, ConstructorCallNode constructorCall, SemanticType semanticType)
+    {
+        if (TryEmitConstructorLiteral(constructorCall, out var llvmType, out var literal))
+        {
+            return new LlvmValue(literal, llvmType, semanticType);
+        }
+
+        if (!_layouts.TryGetValue(constructorCall.ClassName, out var layout))
+        {
+            context.Emitter.EmitRaw($"; Unknown constructor target '{constructorCall.ClassName}'");
+            return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
+        }
+
+        var arguments = constructorCall.Arguments
+            .Select(argument => EmitExpression(context, argument))
+            .ToList();
+
+        var sizePtr = context.Emitter.EmitAssignment($"getelementptr %{layout.Name}, %{layout.Name}* null, i32 1");
+        var size = context.Emitter.EmitAssignment($"ptrtoint %{layout.Name}* {sizePtr} to i64");
+        var raw = context.Emitter.EmitAssignment($"call i8* @malloc(i64 {size})");
+        var instance = context.Emitter.EmitAssignment($"bitcast i8* {raw} to %{layout.Name}*");
+        var classIdPtr = context.Emitter.EmitAssignment($"getelementptr %{layout.Name}, %{layout.Name}* {instance}, i32 0, i32 0");
+        context.Emitter.EmitRaw($"store i32 {layout.ClassId}, i32* {classIdPtr}");
+
+        var ctor = ResolveConstructor(layout, arguments.Select(arg => arg.SemanticType).ToList());
+        if (ctor is not null)
+        {
+            var ctorName = MangleConstructorName(layout, ctor);
+            var argumentList = new List<string> { $"%{layout.Name}* {instance}" };
+            for (var i = 0; i < arguments.Count; i++)
+            {
+                var argumentValue = EnsureType(context, arguments[i], ctor.Parameters[i].Type);
+                argumentList.Add($"{argumentValue.LlvmType} {argumentValue.Register}");
+            }
+
+            context.Emitter.EmitRaw($"call void {ctorName}({string.Join(", ", argumentList)})");
+        }
+        else
+        {
+            context.Emitter.EmitRaw("; Unable to resolve constructor overload");
+        }
+
+        return new LlvmValue(instance, $"%{layout.Name}*", semanticType);
+    }
+
+    private SemanticConstructor? ResolveConstructor(ClassLayout layout, IReadOnlyList<SemanticType> argumentTypes)
+    {
+        foreach (var constructor in layout.SemanticClass.Constructors)
+        {
+            if (constructor.Parameters.Count != argumentTypes.Count)
+            {
+                continue;
+            }
+
+            var match = true;
+            for (var i = 0; i < constructor.Parameters.Count; i++)
+            {
+                var expected = GetCanonicalTypeName(constructor.Parameters[i].Type);
+                var actual = GetCanonicalTypeName(argumentTypes[i]);
+                if (!string.Equals(expected, actual, StringComparison.Ordinal))
                 {
-                    return value;
+                    match = false;
+                    break;
                 }
+            }
+
+            if (match)
+            {
+                return constructor;
             }
         }
 
         return null;
     }
 
-    private bool TryEmitLiteral(Expression expression, out string llvmType, out string literalValue)
+    private LlvmValue EmitCall(FunctionContext context, CallNode call, SemanticType returnType)
     {
-        switch (expression)
+        var argumentValues = call.Arguments
+            .Select(argument => EmitExpression(context, argument))
+            .ToList();
+
+        if (call.Callee is IdentifierNode identifier)
         {
-            case IntegerLiteralNode integerLiteral:
-                llvmType = "i32";
-                literalValue = integerLiteral.Value.ToString(CultureInfo.InvariantCulture);
-                return true;
-
-            case RealLiteralNode realLiteral:
-                llvmType = "double";
-                literalValue = realLiteral.Value.ToString(CultureInfo.InvariantCulture);
-                return true;
-
-            case BooleanLiteralNode booleanLiteral:
-                llvmType = "i1";
-                literalValue = booleanLiteral.Value ? "1" : "0";
-                return true;
-
-            case ConstructorCallNode ctor when TryEmitConstructorLiteral(ctor, out llvmType!, out literalValue!):
-                return true;
+            return EmitInstanceMethodCall(context, context.ThisValue, identifier.Name, argumentValues, returnType);
         }
 
-        llvmType = string.Empty;
-        literalValue = string.Empty;
+        if (call.Callee is MemberAccessNode memberAccess)
+        {
+            var receiver = EmitExpression(context, memberAccess.Target);
+            return EmitInstanceMethodCall(context, receiver, memberAccess.MemberName, argumentValues, returnType);
+        }
+
+        context.Emitter.EmitRaw("; Unsupported call target");
+        return new LlvmValue(GetDefaultValue(ResolveTypeName(returnType)), ResolveTypeName(returnType), returnType);
+    }
+
+    private LlvmValue EmitInstanceMethodCall(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType)
+    {
+        if (TryEmitBuiltinMethod(context, receiver, methodName, arguments, returnType, out var builtinResult))
+        {
+            return builtinResult;
+        }
+
+        if (!receiver.SemanticType.IsReference)
+        {
+            context.Emitter.EmitRaw("; Attempted to call method on non-reference type");
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(returnType)), ResolveTypeName(returnType), returnType);
+        }
+
+        if (!_layouts.TryGetValue(receiver.SemanticType.Name, out var staticLayout))
+        {
+            context.Emitter.EmitRaw($"; Unknown receiver type '{receiver.SemanticType.Name}'");
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(returnType)), ResolveTypeName(returnType), returnType);
+        }
+
+        var signature = new MethodSignature(methodName, arguments.Select(arg => GetCanonicalTypeName(arg.SemanticType)).ToArray());
+        var cases = CollectDispatchCases(staticLayout, signature).ToList();
+
+        if (cases.Count == 0)
+        {
+            context.Emitter.EmitRaw("; No overload matches dispatch signature");
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(returnType)), ResolveTypeName(returnType), returnType);
+        }
+
+        var classIdPtr = context.Emitter.EmitAssignment($"getelementptr %{staticLayout.Name}, %{staticLayout.Name}* {receiver.Register}, i32 0, i32 0");
+        var classId = context.Emitter.EmitAssignment($"load i32, i32* {classIdPtr}");
+
+        var resultPointer = returnType.IsVoid
+            ? string.Empty
+            : context.Emitter.EmitAssignment($"alloca {ResolveTypeName(returnType)}");
+
+        var defaultLabel = context.Emitter.NewLabel("dispatch_default");
+        var mergeLabel = context.Emitter.NewLabel("dispatch_merge");
+        var caseLabels = cases.Select(caseInfo => (Label: context.Emitter.NewLabel($"dispatch_{caseInfo.Layout.Name}"), Case: caseInfo)).ToList();
+
+        context.Emitter.EmitRaw($"switch i32 {classId}, label %{defaultLabel} [");
+        foreach (var (label, caseInfo) in caseLabels)
+        {
+            context.Emitter.EmitRaw($"    i32 {caseInfo.Layout.ClassId}, label %{label}");
+        }
+
+        context.Emitter.EmitRaw("]");
+
+        foreach (var (label, caseInfo) in caseLabels)
+        {
+            context.Emitter.EmitLabel(label);
+            EmitDispatchCase(context, receiver, caseInfo, arguments, resultPointer, returnType, mergeLabel);
+        }
+
+        context.Emitter.EmitLabel(defaultLabel);
+        if (!returnType.IsVoid)
+        {
+            var defaultValue = GetDefaultValue(ResolveTypeName(returnType));
+            context.Emitter.EmitRaw($"store {ResolveTypeName(returnType)} {defaultValue}, {ResolveTypeName(returnType)}* {resultPointer}");
+        }
+
+        context.Emitter.EmitRaw($"br label %{mergeLabel}");
+        context.Emitter.EmitLabel(mergeLabel);
+
+        if (returnType.IsVoid)
+        {
+            return new LlvmValue(string.Empty, "void", returnType);
+        }
+
+        var loadedValue = context.Emitter.EmitAssignment($"load {ResolveTypeName(returnType)}, {ResolveTypeName(returnType)}* {resultPointer}");
+        return new LlvmValue(loadedValue, ResolveTypeName(returnType), returnType);
+    }
+
+    private void EmitDispatchCase(FunctionContext context, LlvmValue receiver, MethodCase caseInfo, IReadOnlyList<LlvmValue> arguments, string resultPointer, SemanticType returnType, string mergeLabel)
+    {
+        var implementation = caseInfo.Implementation;
+        var declaringLayout = implementation.DeclaringClass;
+        var receiverValue = receiver;
+
+        if (!string.Equals(receiverValue.LlvmType, $"%{declaringLayout.Name}*", StringComparison.Ordinal))
+        {
+            var bitcast = context.Emitter.EmitAssignment($"bitcast {receiverValue.LlvmType} {receiverValue.Register} to %{declaringLayout.Name}*");
+            receiverValue = new LlvmValue(bitcast, $"%{declaringLayout.Name}*", receiver.SemanticType);
+        }
+
+        var args = new List<string> { $"%{declaringLayout.Name}* {receiverValue.Register}" };
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var parameterType = implementation.Method.Parameters[i].Type;
+            var argument = EnsureType(context, arguments[i], parameterType);
+            args.Add($"{argument.LlvmType} {argument.Register}");
+        }
+
+        var methodName = MangleMethodName(declaringLayout, implementation.Method);
+        if (returnType.IsVoid)
+        {
+            context.Emitter.EmitRaw($"call void {methodName}({string.Join(", ", args)})");
+        }
+        else
+        {
+            var returnTypeName = ResolveTypeName(returnType);
+            var callResult = context.Emitter.EmitAssignment($"call {returnTypeName} {methodName}({string.Join(", ", args)})");
+            context.Emitter.EmitRaw($"store {returnTypeName} {callResult}, {returnTypeName}* {resultPointer}");
+        }
+
+        context.Emitter.EmitRaw($"br label %{mergeLabel}");
+    }
+
+    private IEnumerable<MethodCase> CollectDispatchCases(ClassLayout layout, MethodSignature signature)
+    {
+        foreach (var descendant in EnumerateHierarchy(layout))
+        {
+            if (descendant.Methods.TryGetValue(signature, out var implementation))
+            {
+                yield return new MethodCase(descendant, implementation);
+            }
+        }
+    }
+
+    private IEnumerable<ClassLayout> EnumerateHierarchy(ClassLayout root)
+    {
+        yield return root;
+        foreach (var child in root.DerivedClasses)
+        {
+            foreach (var descendant in EnumerateHierarchy(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private bool TryEmitBuiltinMethod(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
+    {
+        if (receiver.SemanticType.IsInteger)
+        {
+            return TryEmitIntegerBuiltin(context, receiver, methodName, arguments, returnType, out result);
+        }
+
+        if (receiver.SemanticType.IsReal)
+        {
+            return TryEmitRealBuiltin(context, receiver, methodName, arguments, returnType, out result);
+        }
+
+        if (receiver.SemanticType.IsBoolean)
+        {
+            return TryEmitBooleanBuiltin(context, receiver, methodName, arguments, returnType, out result);
+        }
+
+        result = default;
         return false;
     }
 
-    private bool TryEmitConstructorLiteral(ConstructorCallNode ctor, out string llvmType, out string literalValue)
+    private bool TryEmitIntegerBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
     {
-        llvmType = string.Empty;
-        literalValue = string.Empty;
-
-        if (ctor.Arguments.Count != 1)
+        switch (methodName)
         {
-            return false;
+            case "Plus" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"add i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "Minus" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"sub i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "Mult" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"mul i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "Div" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"sdiv i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "Rem" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"srem i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "Less" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"icmp slt i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Greater" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"icmp sgt i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Equal" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"icmp eq i32 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "toReal" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"sitofp i32 {receiver.Register} to double");
+                result = new LlvmValue(value, "double", RealType);
+                return true;
+            }
+
+            case "toBoolean" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"icmp ne i32 {receiver.Register}, 0");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
         }
 
-        return ctor.ClassName switch
-        {
-            "Integer" when TryEmitLiteral(ctor.Arguments[0], out llvmType, out literalValue) && llvmType == "i32" => true,
-            "Real" when TryEmitLiteral(ctor.Arguments[0], out llvmType, out literalValue) && llvmType == "double" => true,
-            "Boolean" when TryEmitLiteral(ctor.Arguments[0], out llvmType, out literalValue) && llvmType == "i1" => true,
-            _ => false,
-        };
+        result = default;
+        return false;
     }
 
-    private string ResolveType(TypeNode? typeNode)
+    private bool TryEmitRealBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
     {
-        if (typeNode is null)
+        switch (methodName)
+        {
+            case "Plus" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fadd double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "double", RealType);
+                return true;
+            }
+
+            case "Minus" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fsub double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "double", RealType);
+                return true;
+            }
+
+            case "Mult" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fmul double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "double", RealType);
+                return true;
+            }
+
+            case "Div" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fdiv double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "double", RealType);
+                return true;
+            }
+
+            case "Less" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fcmp olt double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Greater" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fcmp ogt double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Equal" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"fcmp oeq double {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "toInteger" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"fptosi double {receiver.Register} to i32");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+        }
+
+        result = default;
+        return false;
+    }
+
+    private bool TryEmitBooleanBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
+    {
+        switch (methodName)
+        {
+            case "And" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"and i1 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Or" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"or i1 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Xor" when arguments.Count == 1:
+            {
+                var arg = EnsureType(context, arguments[0], receiver.SemanticType);
+                var value = context.Emitter.EmitAssignment($"xor i1 {receiver.Register}, {arg.Register}");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "Not" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"xor i1 {receiver.Register}, 1");
+                result = new LlvmValue(value, "i1", BooleanType);
+                return true;
+            }
+
+            case "toInteger" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"zext i1 {receiver.Register} to i32");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+        }
+
+        result = default;
+        return false;
+    }
+
+    private LlvmValue EnsureType(FunctionContext context, LlvmValue value, SemanticType targetType)
+    {
+        var targetTypeName = ResolveTypeName(targetType);
+        if (string.Equals(value.LlvmType, targetTypeName, StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        return ConvertValue(context, value, targetType);
+    }
+
+    private LlvmValue ConvertValue(FunctionContext context, LlvmValue value, SemanticType targetType)
+    {
+        if (value.SemanticType.IsInteger && targetType.IsReal)
+        {
+            var converted = context.Emitter.EmitAssignment($"sitofp i32 {value.Register} to double");
+            return new LlvmValue(converted, "double", targetType);
+        }
+
+        if (value.SemanticType.IsReal && targetType.IsInteger)
+        {
+            var converted = context.Emitter.EmitAssignment($"fptosi double {value.Register} to i32");
+            return new LlvmValue(converted, "i32", targetType);
+        }
+
+        if (value.SemanticType.IsInteger && targetType.IsBoolean)
+        {
+            var converted = context.Emitter.EmitAssignment($"icmp ne i32 {value.Register}, 0");
+            return new LlvmValue(converted, "i1", targetType);
+        }
+
+        if (value.SemanticType.IsBoolean && targetType.IsInteger)
+        {
+            var converted = context.Emitter.EmitAssignment($"zext i1 {value.Register} to i32");
+            return new LlvmValue(converted, "i32", targetType);
+        }
+
+        return new LlvmValue(value.Register, ResolveTypeName(targetType), targetType);
+    }
+
+    private string GetFieldPointer(FunctionContext context, LlvmValue instance, string fieldName, out FieldLayout? layout)
+    {
+        layout = null;
+
+        if (!_layouts.TryGetValue(instance.SemanticType.Name, out var classLayout))
+        {
+            return string.Empty;
+        }
+
+        layout = classLayout.Fields.FirstOrDefault(field => string.Equals(field.Name, fieldName, StringComparison.Ordinal));
+        if (layout is null)
+        {
+            return string.Empty;
+        }
+
+        return context.Emitter.EmitAssignment($"getelementptr %{classLayout.Name}, %{classLayout.Name}* {instance.Register}, i32 0, i32 {layout.Index}");
+    }
+
+    private void StoreValue(FunctionContext context, LlvmValue value, string pointer, string llvmType)
+    {
+        if (string.IsNullOrEmpty(pointer))
+        {
+            return;
+        }
+
+        if (!string.Equals(value.LlvmType, llvmType, StringComparison.Ordinal))
+        {
+            value = new LlvmValue(value.Register, llvmType, value.SemanticType);
+        }
+
+        context.Emitter.EmitRaw($"store {llvmType} {value.Register}, {llvmType}* {pointer}");
+    }
+
+    private string EnsureBoolean(FunctionContext context, LlvmValue value)
+    {
+        if (value.LlvmType == "i1")
+        {
+            return value.Register;
+        }
+
+        var converted = ConvertValue(context, value, BooleanType);
+        return converted.Register;
+    }
+
+    private string BuildSignature(ClassLayout layout, SemanticMethod method)
+    {
+        var parameters = new List<string>
+        {
+            $"%{layout.Name}* %this",
+        };
+
+        foreach (var parameter in method.Parameters)
+        {
+            parameters.Add($"{ResolveTypeName(parameter.Type)} %{Sanitize(parameter.Name)}");
+        }
+
+        var mangledName = MangleMethodName(layout, method);
+        return $"{mangledName}({string.Join(", ", parameters)})";
+    }
+
+    private string MangleMethodName(ClassLayout layout, SemanticMethod method)
+    {
+        var builder = new StringBuilder();
+        builder.Append('@');
+        builder.Append(layout.Name);
+        builder.Append('_');
+        builder.Append(method.Name);
+
+        foreach (var parameter in method.Parameters)
+        {
+            builder.Append("__");
+            builder.Append(GetCanonicalTypeName(parameter.Type));
+        }
+
+        return builder.ToString();
+    }
+
+    private string MangleConstructorName(ClassLayout layout, SemanticConstructor constructor)
+    {
+        var builder = new StringBuilder();
+        builder.Append('@');
+        builder.Append(layout.Name);
+        builder.Append("_ctor");
+
+        foreach (var parameter in constructor.Parameters)
+        {
+            builder.Append("__");
+            builder.Append(GetCanonicalTypeName(parameter.Type));
+        }
+
+        return builder.ToString();
+    }
+
+    private MethodSignature CreateMethodSignature(SemanticMethod method)
+    {
+        var parameterTypes = method.Parameters
+            .Select(parameter => GetCanonicalTypeName(parameter.Type))
+            .ToArray();
+        return new MethodSignature(method.Name, parameterTypes);
+    }
+
+    private static string GetCanonicalTypeName(SemanticType type)
+    {
+        if (type.IsInteger)
+        {
+            return "Integer";
+        }
+
+        if (type.IsReal)
+        {
+            return "Real";
+        }
+
+        if (type.IsBoolean)
+        {
+            return "Boolean";
+        }
+
+        if (type.IsVoid)
+        {
+            return "Void";
+        }
+
+        return SanitizeTypeName(type.Name);
+    }
+
+    private static string Sanitize(string text)
+    {
+        var builder = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            builder.Append(char.IsLetterOrDigit(c) ? c : '_');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string SanitizeTypeName(string name)
+    {
+        var builder = new StringBuilder(name.Length);
+        foreach (var c in name)
+        {
+            builder.Append(char.IsLetterOrDigit(c) ? c : '_');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string ResolveTypeName(SemanticType type)
+    {
+        if (type.IsInteger)
+        {
+            return "i32";
+        }
+
+        if (type.IsReal)
+        {
+            return "double";
+        }
+
+        if (type.IsBoolean)
+        {
+            return "i1";
+        }
+
+        if (type.IsVoid)
         {
             return "void";
         }
 
-        return typeNode switch
-        {
-            ArrayTypeNode => "%Array*",
-            ListTypeNode => "%List*",
-            _ => ResolveTypeName(typeNode.Name, treatAsPointerForCustomType: true),
-        };
-    }
-
-    private string ResolveTypeName(string typeName, bool treatAsPointerForCustomType)
-    {
-        return typeName switch
-        {
-            "Integer" => "i32",
-            "Real" => "double",
-            "Boolean" => "i1",
-            "Void" => "void",
-            _ => treatAsPointerForCustomType ? $"%{typeName}*" : $"%{typeName}",
-        };
+        return $"%{SanitizeTypeName(type.Name)}*";
     }
 
     private static string GetDefaultValue(string llvmType)
@@ -310,14 +1273,175 @@ public sealed class LlvmGenerator
         };
     }
 
-    private static string Sanitize(string parameterName)
+    private static bool TryEmitConstructorLiteral(ConstructorCallNode ctor, out string llvmType, out string literalValue)
     {
-        var sanitized = new StringBuilder(parameterName.Length);
-        foreach (var c in parameterName)
+        llvmType = string.Empty;
+        literalValue = string.Empty;
+
+        if (ctor.Arguments.Count != 1)
         {
-            sanitized.Append(char.IsLetterOrDigit(c) ? c : '_');
+            return false;
         }
 
-        return sanitized.ToString();
+        if (ctor.ClassName == BuiltInTypes.Integer.Name && ctor.Arguments[0] is IntegerLiteralNode intLiteral)
+        {
+            llvmType = "i32";
+            literalValue = intLiteral.Value.ToString(CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        if (ctor.ClassName == BuiltInTypes.Real.Name && ctor.Arguments[0] is RealLiteralNode realLiteral)
+        {
+            llvmType = "double";
+            literalValue = realLiteral.Value.ToString(CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        if (ctor.ClassName == BuiltInTypes.Boolean.Name && ctor.Arguments[0] is BooleanLiteralNode boolLiteral)
+        {
+            llvmType = "i1";
+            literalValue = boolLiteral.Value ? "1" : "0";
+            return true;
+        }
+
+        return false;
+    }
+
+    private sealed record FieldLayout(string Name, string LlvmType, SemanticType SemanticType, int Index, bool IsHeader);
+
+    private sealed class ClassLayout
+    {
+        public ClassLayout(SemanticClass semanticClass, int classId, IReadOnlyList<FieldLayout> fields, ClassLayout? baseClass)
+        {
+            SemanticClass = semanticClass;
+            ClassId = classId;
+            Fields = fields;
+            BaseClass = baseClass;
+            Methods = new Dictionary<MethodSignature, MethodImplementation>();
+            DerivedClasses = new List<ClassLayout>();
+        }
+
+        public SemanticClass SemanticClass { get; }
+
+        public string Name => SemanticClass.Name;
+
+        public int ClassId { get; }
+
+        public IReadOnlyList<FieldLayout> Fields { get; }
+
+        public ClassLayout? BaseClass { get; }
+
+        public Dictionary<MethodSignature, MethodImplementation> Methods { get; }
+
+        public List<ClassLayout> DerivedClasses { get; }
+    }
+
+    private sealed record MethodSignature(string Name, IReadOnlyList<string> ParameterTypes);
+
+    private sealed record MethodImplementation(ClassLayout DeclaringClass, SemanticMethod Method);
+
+    private sealed record MethodCase(ClassLayout Layout, MethodImplementation Implementation);
+
+    private readonly record struct LlvmValue(string Register, string LlvmType, SemanticType SemanticType);
+
+    private readonly record struct VariableSlot(string Pointer, string LlvmType, SemanticType SemanticType);
+
+    private sealed class FunctionEmitter
+    {
+        private readonly StringBuilder _builder;
+        private int _tempIndex;
+        private int _labelIndex;
+        private bool _currentBlockTerminated;
+
+        public FunctionEmitter(StringBuilder builder)
+        {
+            _builder = builder;
+        }
+
+        public bool IsCurrentBlockTerminated => _currentBlockTerminated;
+
+        public string EmitAssignment(string instruction)
+        {
+            var temp = NewTemporary();
+            _builder.Append("  ");
+            _builder.Append(temp);
+            _builder.Append(" = ");
+            _builder.AppendLine(instruction);
+            _currentBlockTerminated = instruction.StartsWith("br") || instruction.StartsWith("ret");
+            return temp;
+        }
+
+        public void EmitRaw(string text)
+        {
+            _builder.Append("  ");
+            _builder.AppendLine(text);
+            if (text.StartsWith("ret", StringComparison.Ordinal) || text.StartsWith("br", StringComparison.Ordinal))
+            {
+                _currentBlockTerminated = true;
+            }
+        }
+
+        public void EmitLabel(string label)
+        {
+            _builder.Append(label);
+            _builder.AppendLine(":");
+            _currentBlockTerminated = false;
+        }
+
+        public string NewLabel(string prefix)
+        {
+            return $"{prefix}_{_labelIndex++}";
+        }
+
+        public void MarkTerminated()
+        {
+            _currentBlockTerminated = true;
+        }
+
+        private string NewTemporary() => $"%t{_tempIndex++}";
+    }
+
+    private sealed class FunctionContext
+    {
+        private readonly Dictionary<string, VariableSlot> _variables = new(StringComparer.Ordinal);
+
+        private FunctionContext(ClassLayout layout, SemanticType returnType, FunctionEmitter emitter)
+        {
+            ClassLayout = layout;
+            ReturnType = returnType;
+            Emitter = emitter;
+            ThisValue = new LlvmValue("%this", $"%{layout.Name}*", new SemanticType(layout.Name, false, false));
+        }
+
+        public static FunctionContext ForMethod(ClassLayout layout, SemanticMethod method, FunctionEmitter emitter)
+        {
+            return new FunctionContext(layout, method.ReturnType, emitter);
+        }
+
+        public static FunctionContext ForConstructor(ClassLayout layout, SemanticConstructor constructor, FunctionEmitter emitter)
+        {
+            return new FunctionContext(layout, SemanticTypeVoid, emitter);
+        }
+
+        private static SemanticType SemanticTypeVoid => new("Void", true, false);
+
+        public ClassLayout ClassLayout { get; }
+
+        public FunctionEmitter Emitter { get; }
+
+        public LlvmValue ThisValue { get; }
+
+        public SemanticType ReturnType { get; }
+
+        public VariableSlot DeclareVariable(string name, SemanticType type)
+        {
+            var llvmType = LlvmGenerator.ResolveTypeName(type);
+            var pointer = Emitter.EmitAssignment($"alloca {llvmType}");
+            var slot = new VariableSlot(pointer, llvmType, type);
+            _variables[name] = slot;
+            return slot;
+        }
+
+        public bool TryGetVariable(string name, out VariableSlot slot) => _variables.TryGetValue(name, out slot);
     }
 }

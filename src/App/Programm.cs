@@ -30,7 +30,7 @@ class Entry
                     var printer = new AstPrinter();
                     Console.WriteLine(printer.Print(ast));
 
-                    var llvmGenerator = new LlvmGenerator();
+                    var llvmGenerator = new LlvmGenerator(analyzer.Model);
                     var llvmIr = llvmGenerator.Generate(ast);
 
                     Console.WriteLine(";; ---- LLVM IR ----");

@@ -17,6 +17,11 @@ public sealed partial class SemanticAnalyzer
     };
 
     private readonly Dictionary<VariableDeclarationNode, VariableSymbol> _variableSymbols = new();
+    private readonly Dictionary<Expression, SemanticType> _expressionTypes = new();
+    private readonly Dictionary<VariableDeclarationNode, SemanticType> _variableTypes = new();
+    private SemanticModel? _model;
+
+    public SemanticModel Model => _model ?? throw new InvalidOperationException("Semantic analysis has not been performed.");
 
     public void Analyze(ProgramNode program)
     {
@@ -27,9 +32,13 @@ public sealed partial class SemanticAnalyzer
 
         _classes.Clear();
         _variableSymbols.Clear();
+        _expressionTypes.Clear();
+        _variableTypes.Clear();
+        _model = null;
 
         RegisterClasses(program);
         AnalyzeClasses(program);
+        BuildSemanticModel();
     }
 
     // Если класс объявлен повторно
@@ -97,6 +106,68 @@ public sealed partial class SemanticAnalyzer
         RegisterMembers(classSymbol);
         AnalyzeMembers(classSymbol);
         OptimizeClassMembers(classSymbol);
+    }
+
+    private SemanticType CreateSemanticType(TypeSymbol type) => new(type.Name, type.IsVoid, type.IsUnknown);
+
+    private TypeSymbol Annotate(Expression expression, TypeSymbol type)
+    {
+        _expressionTypes[expression] = CreateSemanticType(type);
+        return type;
+    }
+
+    private void TrackVariableType(VariableDeclarationNode node, TypeSymbol type)
+    {
+        _variableTypes[node] = CreateSemanticType(type);
+    }
+
+    private void BuildSemanticModel()
+    {
+        var classInfos = new Dictionary<string, SemanticClass>(StringComparer.Ordinal);
+
+        foreach (var (name, symbol) in _classes)
+        {
+            classInfos[name] = CreateSemanticClass(symbol);
+        }
+
+        _model = new SemanticModel(
+            new Dictionary<Expression, SemanticType>(_expressionTypes),
+            new Dictionary<VariableDeclarationNode, SemanticType>(_variableTypes),
+            classInfos);
+    }
+
+    private SemanticClass CreateSemanticClass(ClassSymbol classSymbol)
+    {
+        var fields = classSymbol.Fields
+            .Select(field => new SemanticField(field.Name, CreateSemanticType(field.Type), (VariableDeclarationNode)field.Node))
+            .ToList();
+
+        var methods = new List<SemanticMethod>();
+
+        foreach (var method in classSymbol.AllMethods)
+        {
+            var declaration = method.Implementation ?? method.Declaration;
+            if (declaration is null)
+            {
+                continue;
+            }
+
+            var parameters = method.Parameters
+                .Select(parameter => new SemanticParameter(parameter.Name, CreateSemanticType(parameter.Type), parameter.Node))
+                .ToList();
+
+            methods.Add(new SemanticMethod(method.Name, CreateSemanticType(method.ReturnType), parameters, declaration));
+        }
+
+        var constructors = classSymbol.Constructors
+            .Select(constructor => new SemanticConstructor(
+                constructor.Parameters
+                    .Select(parameter => new SemanticParameter(parameter.Name, CreateSemanticType(parameter.Type), parameter.Node))
+                    .ToList(),
+                constructor.Node))
+            .ToList();
+
+        return new SemanticClass(classSymbol.Name, classSymbol.BaseClassName, fields, methods, constructors);
     }
 
     private void RegisterMembers(ClassSymbol classSymbol)

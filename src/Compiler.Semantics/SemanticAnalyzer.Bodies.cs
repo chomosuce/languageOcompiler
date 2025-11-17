@@ -27,6 +27,7 @@ public sealed partial class SemanticAnalyzer
                     }
 
                     var valueType = EvaluateExpression(local.InitialValue, scope, classSymbol, context, loopDepth);
+                    TrackVariableType(local, valueType);
                     var symbol = new VariableSymbol(local.Name, valueType, VariableKind.Local, local);
                     scope.Declare(symbol);
                     _variableSymbols[local] = symbol;

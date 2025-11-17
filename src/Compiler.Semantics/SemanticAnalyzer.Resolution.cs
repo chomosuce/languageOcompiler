@@ -163,6 +163,11 @@ public sealed partial class SemanticAnalyzer
 
     private TypeSymbol ResolveNamedType(string typeName, Node node)
     {
+        if (string.Equals(typeName, "Void", StringComparison.OrdinalIgnoreCase))
+        {
+            return TypeSymbol.Void;
+        }
+
         if (_builtInTypes.Contains(typeName) || _classes.ContainsKey(typeName))
         {
             return new TypeSymbol(typeName);

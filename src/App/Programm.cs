@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Compiler.Ast;
+using Compiler.LLvm;
 using Compiler.Parser;
 using Compiler.Semantics;
 
@@ -28,6 +29,12 @@ class Entry
 
                     var printer = new AstPrinter();
                     Console.WriteLine(printer.Print(ast));
+
+                    var llvmGenerator = new LlvmGenerator();
+                    var llvmIr = llvmGenerator.Generate(ast);
+
+                    Console.WriteLine(";; ---- LLVM IR ----");
+                    Console.WriteLine(llvmIr);
                 }
                 catch (SemanticException ex)
                 {

@@ -7,16 +7,40 @@ namespace Compiler.Semantics;
 
 public sealed partial class SemanticAnalyzer
 {
-    private sealed record TypeSymbol(string Name, bool IsUnknownType = false, bool IsVoidType = false)
+    private sealed record TypeSymbol(string Name, TypeKind Kind)
     {
-        public static readonly TypeSymbol Integer = new(BuiltInTypes.Integer.Name);
-        public static readonly TypeSymbol Real = new(BuiltInTypes.Real.Name);
-        public static readonly TypeSymbol Boolean = new(BuiltInTypes.Boolean.Name);
-        public static readonly TypeSymbol Void = new("void", false, true);
-        public static readonly TypeSymbol Unknown = new("?", true, false);
+        public static readonly TypeSymbol Integer = new(BuiltInTypes.Integer.Name, TypeKind.Integer);
+        public static readonly TypeSymbol Real = new(BuiltInTypes.Real.Name, TypeKind.Real);
+        public static readonly TypeSymbol Boolean = new(BuiltInTypes.Boolean.Name, TypeKind.Boolean);
+        public static readonly TypeSymbol Void = new("void", TypeKind.Void);
+        public static readonly TypeSymbol Standard = new("?", TypeKind.Standard);
 
-        public bool IsVoid => IsVoidType;
-        public bool IsUnknown => IsUnknownType;
+        public bool IsVoid => Kind == TypeKind.Void;
+        public bool IsStandard => Kind == TypeKind.Standard;
+        public bool IsArray => Kind == TypeKind.Array;
+        public bool IsList => Kind == TypeKind.List;
+
+        public bool TryGetArrayElementType(out string elementType)
+        {
+            if (Kind != TypeKind.Array)
+            {
+                elementType = string.Empty;
+                return false;
+            }
+
+            return TypeNameHelper.TryGetArrayElementType(Name, out elementType);
+        }
+
+        public bool TryGetListElementType(out string elementType)
+        {
+            if (Kind != TypeKind.List)
+            {
+                elementType = string.Empty;
+                return false;
+            }
+
+            return TypeNameHelper.TryGetListElementType(Name, out elementType);
+        }
 
         public override string ToString() => Name;
     }
@@ -205,7 +229,7 @@ public sealed partial class SemanticAnalyzer
                 var parameterType = Parameters[i].Type;
                 var argumentType = argumentTypes[i];
 
-                if (parameterType.IsUnknown || argumentType.IsUnknown)
+                if (parameterType.IsStandard || argumentType.IsStandard)
                 {
                     continue;
                 }
@@ -262,7 +286,7 @@ public sealed partial class SemanticAnalyzer
                 var parameterType = Parameters[i].Type;
                 var argumentType = argumentTypes[i];
 
-                if (parameterType.IsUnknown || argumentType.IsUnknown)
+                if (parameterType.IsStandard || argumentType.IsStandard)
                 {
                     continue;
                 }

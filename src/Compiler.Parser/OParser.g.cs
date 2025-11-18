@@ -575,12 +575,12 @@ public partial class Parser: ShiftReduceParser<Compiler.Parser.SemVal, LexLocati
         break;
       case 57: // constructor_invocation -> IDENT, LBRACKET, type_name, RBRACKET, LPAREN, RPAREN
 #line 320 "OParser.y"
-        { 
+        {
             
             if (ValueStack[ValueStack.Depth-6] == "Array")
-                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("Array", new List<Expression>()), LocationStack[LocationStack.Depth-6]);
+                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("Array", new List<Expression>(), ValueStack[ValueStack.Depth-4]), LocationStack[LocationStack.Depth-6]);
             else if (ValueStack[ValueStack.Depth-6] == "List")
-                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("List", new List<Expression>()), LocationStack[LocationStack.Depth-6]);
+                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("List", new List<Expression>(), ValueStack[ValueStack.Depth-4]), LocationStack[LocationStack.Depth-6]);
             else
                 CurrentSemanticValue = AttachLocation(new ConstructorCallNode(ValueStack[ValueStack.Depth-6], new List<Expression>()), LocationStack[LocationStack.Depth-6]);
         }
@@ -589,11 +589,11 @@ public partial class Parser: ShiftReduceParser<Compiler.Parser.SemVal, LexLocati
       case 58: // constructor_invocation -> IDENT, LBRACKET, type_name, RBRACKET, LPAREN, 
                //                           arg_list, RPAREN
 #line 330 "OParser.y"
-        { 
+        {
             if (ValueStack[ValueStack.Depth-7] == "Array")
-                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("Array", ValueStack[ValueStack.Depth-2]), LocationStack[LocationStack.Depth-7]);
+                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("Array", ValueStack[ValueStack.Depth-2], ValueStack[ValueStack.Depth-5]), LocationStack[LocationStack.Depth-7]);
             else if (ValueStack[ValueStack.Depth-7] == "List")
-                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("List", ValueStack[ValueStack.Depth-2]), LocationStack[LocationStack.Depth-7]);
+                CurrentSemanticValue = AttachLocation(new ConstructorCallNode("List", ValueStack[ValueStack.Depth-2], ValueStack[ValueStack.Depth-5]), LocationStack[LocationStack.Depth-7]);
             else
                 CurrentSemanticValue = AttachLocation(new ConstructorCallNode(ValueStack[ValueStack.Depth-7], ValueStack[ValueStack.Depth-2]), LocationStack[LocationStack.Depth-7]);
         }

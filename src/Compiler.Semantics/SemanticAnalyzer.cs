@@ -108,7 +108,7 @@ public sealed partial class SemanticAnalyzer
         OptimizeClassMembers(classSymbol);
     }
 
-    private SemanticType CreateSemanticType(TypeSymbol type) => new(type.Name, type.IsVoid, type.IsUnknown);
+    private SemanticType CreateSemanticType(TypeSymbol type) => new(type.Name, type.Kind);
 
     private TypeSymbol Annotate(Expression expression, TypeSymbol type)
     {

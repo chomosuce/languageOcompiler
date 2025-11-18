@@ -14,9 +14,9 @@ public sealed class LlvmGenerator
     private readonly Dictionary<string, ClassLayout> _layouts = new(StringComparer.Ordinal);
     private int _nextClassId;
 
-    private static readonly SemanticType IntegerType = new(BuiltInTypes.Integer.Name, false, false);
-    private static readonly SemanticType RealType = new(BuiltInTypes.Real.Name, false, false);
-    private static readonly SemanticType BooleanType = new(BuiltInTypes.Boolean.Name, false, false);
+    private static readonly SemanticType IntegerType = new(BuiltInTypes.Integer.Name, TypeKind.Integer);
+    private static readonly SemanticType RealType = new(BuiltInTypes.Real.Name, TypeKind.Real);
+    private static readonly SemanticType BooleanType = new(BuiltInTypes.Boolean.Name, TypeKind.Boolean);
 
     public LlvmGenerator(SemanticModel semanticModel)
     {
@@ -34,7 +34,9 @@ public sealed class LlvmGenerator
         var builder = new StringBuilder();
         builder.AppendLine("; ModuleID = 'languageOcompiler'");
         builder.AppendLine("source_filename = \"languageO\"");
-        builder.AppendLine("declare i8* @malloc(i64)");
+        EmitRuntimeTypeDefinitions(builder);
+        builder.AppendLine();
+        EmitRuntimeDeclarations(builder);
         builder.AppendLine();
 
         EmitTypeDefinitions(builder, layouts);
@@ -83,14 +85,14 @@ public sealed class LlvmGenerator
         }
         else
         {
-            inheritedFields.Add(new FieldLayout("__classId", "i32", IntegerType, 0, true));
+            inheritedFields.Add(new FieldLayout("__classId", "i32", IntegerType, 0));
         }
 
         var fields = new List<FieldLayout>(inheritedFields);
 
         foreach (var field in semanticClass.Fields)
         {
-            fields.Add(new FieldLayout(field.Name, ResolveTypeName(field.Type), field.Type, fields.Count, false));
+            fields.Add(new FieldLayout(field.Name, ResolveTypeName(field.Type), field.Type, fields.Count));
         }
 
         var layout = new ClassLayout(semanticClass, ++_nextClassId, fields, baseLayout);
@@ -112,6 +114,28 @@ public sealed class LlvmGenerator
         }
 
         return layout;
+    }
+
+    private static void EmitRuntimeTypeDefinitions(StringBuilder builder)
+    {
+        builder.AppendLine("%Array = type { i32, i8* }");
+        builder.AppendLine("%List = type { i8* }");
+    }
+
+    private static void EmitRuntimeDeclarations(StringBuilder builder)
+    {
+        builder.AppendLine("declare i8* @malloc(i64)");
+        builder.AppendLine("declare %Array* @o_array_new(i32)");
+        builder.AppendLine("declare i32 @o_array_length(%Array*)");
+        builder.AppendLine("declare i8* @o_array_get(%Array*, i32)");
+        builder.AppendLine("declare void @o_array_set(%Array*, i32, i8*)");
+        builder.AppendLine("declare %List* @o_list_empty()");
+        builder.AppendLine("declare %List* @o_list_singleton(i8*)");
+        builder.AppendLine("declare %List* @o_list_replicate(i8*, i32)");
+        builder.AppendLine("declare %List* @o_list_append(%List*, i8*)");
+        builder.AppendLine("declare i8* @o_list_head(%List*)");
+        builder.AppendLine("declare %List* @o_list_tail(%List*)");
+        builder.AppendLine("declare %Array* @o_list_to_array(%List*)");
     }
 
     private void EmitTypeDefinitions(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts)
@@ -603,15 +627,25 @@ public sealed class LlvmGenerator
             return new LlvmValue(literal, llvmType, semanticType);
         }
 
+        var arguments = constructorCall.Arguments
+            .Select(argument => EmitExpression(context, argument))
+            .ToList();
+
+        if (semanticType.IsArray)
+        {
+            return EmitArrayConstructor(context, arguments, semanticType);
+        }
+
+        if (semanticType.IsList)
+        {
+            return EmitListConstructor(context, arguments, semanticType);
+        }
+
         if (!_layouts.TryGetValue(constructorCall.ClassName, out var layout))
         {
             context.Emitter.EmitRaw($"; Unknown constructor target '{constructorCall.ClassName}'");
             return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
         }
-
-        var arguments = constructorCall.Arguments
-            .Select(argument => EmitExpression(context, argument))
-            .ToList();
 
         var sizePtr = context.Emitter.EmitAssignment($"getelementptr %{layout.Name}, %{layout.Name}* null, i32 1");
         var size = context.Emitter.EmitAssignment($"ptrtoint %{layout.Name}* {sizePtr} to i64");
@@ -639,6 +673,57 @@ public sealed class LlvmGenerator
         }
 
         return new LlvmValue(instance, $"%{layout.Name}*", semanticType);
+    }
+
+    private LlvmValue EmitArrayConstructor(FunctionContext context, IReadOnlyList<LlvmValue> arguments, SemanticType semanticType)
+    {
+        if (arguments.Count != 1)
+        {
+            context.Emitter.EmitRaw("; Array constructor expects a single length argument");
+            return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
+        }
+
+        var lengthValue = EnsureType(context, arguments[0], IntegerType);
+        var arrayInstance = context.Emitter.EmitAssignment($"call %Array* @o_array_new(i32 {lengthValue.Register})");
+        return new LlvmValue(arrayInstance, ResolveTypeName(semanticType), semanticType);
+    }
+
+    private LlvmValue EmitListConstructor(FunctionContext context, IReadOnlyList<LlvmValue> arguments, SemanticType semanticType)
+    {
+        if (!semanticType.TryGetListElementType(out var elementTypeName))
+        {
+            return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
+        }
+
+        var elementType = CreateSemanticType(elementTypeName);
+        var listTypeName = ResolveTypeName(semanticType);
+
+        switch (arguments.Count)
+        {
+            case 0:
+            {
+                var empty = context.Emitter.EmitAssignment("call %List* @o_list_empty()");
+                return new LlvmValue(empty, listTypeName, semanticType);
+            }
+            case 1:
+            {
+                var value = EnsureType(context, arguments[0], elementType);
+                var pointer = ConvertValueToRuntimePointer(context, value);
+                var single = context.Emitter.EmitAssignment($"call %List* @o_list_singleton(i8* {pointer})");
+                return new LlvmValue(single, listTypeName, semanticType);
+            }
+            case 2:
+            {
+                var value = EnsureType(context, arguments[0], elementType);
+                var pointer = ConvertValueToRuntimePointer(context, value);
+                var count = EnsureType(context, arguments[1], IntegerType);
+                var replicated = context.Emitter.EmitAssignment($"call %List* @o_list_replicate(i8* {pointer}, i32 {count.Register})");
+                return new LlvmValue(replicated, listTypeName, semanticType);
+            }
+            default:
+                context.Emitter.EmitRaw("; Unsupported List constructor arity");
+                return new LlvmValue("null", listTypeName, semanticType);
+        }
     }
 
     private SemanticConstructor? ResolveConstructor(ClassLayout layout, IReadOnlyList<SemanticType> argumentTypes)
@@ -824,6 +909,16 @@ public sealed class LlvmGenerator
 
     private bool TryEmitBuiltinMethod(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
     {
+        if (receiver.SemanticType.IsArray)
+        {
+            return TryEmitArrayBuiltin(context, receiver, methodName, arguments, returnType, out result);
+        }
+
+        if (receiver.SemanticType.IsList)
+        {
+            return TryEmitListBuiltin(context, receiver, methodName, arguments, returnType, out result);
+        }
+
         if (receiver.SemanticType.IsInteger)
         {
             return TryEmitIntegerBuiltin(context, receiver, methodName, arguments, returnType, out result);
@@ -840,6 +935,95 @@ public sealed class LlvmGenerator
         }
 
         result = default;
+        return false;
+    }
+
+    private bool TryEmitArrayBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
+    {
+        result = default;
+
+        if (!receiver.SemanticType.TryGetArrayElementType(out var elementTypeName))
+        {
+            return false;
+        }
+
+        var elementType = CreateSemanticType(elementTypeName);
+
+        switch (methodName)
+        {
+            case "Length" when arguments.Count == 0:
+            {
+                var value = context.Emitter.EmitAssignment($"call i32 @o_array_length(%Array* {receiver.Register})");
+                result = new LlvmValue(value, "i32", IntegerType);
+                return true;
+            }
+
+            case "get" when arguments.Count == 1:
+            {
+                var index = EnsureType(context, arguments[0], IntegerType);
+                var raw = context.Emitter.EmitAssignment($"call i8* @o_array_get(%Array* {receiver.Register}, i32 {index.Register})");
+                result = ConvertRuntimePointerToValue(context, raw, returnType);
+                return true;
+            }
+
+            case "set" when arguments.Count == 2:
+            {
+                var index = EnsureType(context, arguments[0], IntegerType);
+                var value = EnsureType(context, arguments[1], elementType);
+                var pointer = ConvertValueToRuntimePointer(context, value);
+                context.Emitter.EmitRaw($"call void @o_array_set(%Array* {receiver.Register}, i32 {index.Register}, i8* {pointer})");
+                result = new LlvmValue(receiver.Register, receiver.LlvmType, receiver.SemanticType);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryEmitListBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
+    {
+        result = default;
+
+        if (!receiver.SemanticType.TryGetListElementType(out var elementTypeName))
+        {
+            return false;
+        }
+
+        var elementType = CreateSemanticType(elementTypeName);
+
+        switch (methodName)
+        {
+            case "append" when arguments.Count == 1:
+            {
+                var value = EnsureType(context, arguments[0], elementType);
+                var pointer = ConvertValueToRuntimePointer(context, value);
+                var appended = context.Emitter.EmitAssignment($"call %List* @o_list_append(%List* {receiver.Register}, i8* {pointer})");
+                result = new LlvmValue(appended, ResolveTypeName(returnType), returnType);
+                return true;
+            }
+
+            case "head" when arguments.Count == 0:
+            {
+                var raw = context.Emitter.EmitAssignment($"call i8* @o_list_head(%List* {receiver.Register})");
+                result = ConvertRuntimePointerToValue(context, raw, returnType);
+                return true;
+            }
+
+            case "tail" when arguments.Count == 0:
+            {
+                var tail = context.Emitter.EmitAssignment($"call %List* @o_list_tail(%List* {receiver.Register})");
+                result = new LlvmValue(tail, ResolveTypeName(returnType), returnType);
+                return true;
+            }
+
+            case "toArray" when arguments.Count == 0:
+            {
+                var arrayValue = context.Emitter.EmitAssignment($"call %Array* @o_list_to_array(%List* {receiver.Register})");
+                result = new LlvmValue(arrayValue, ResolveTypeName(returnType), returnType);
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -1060,6 +1244,40 @@ public sealed class LlvmGenerator
         return ConvertValue(context, value, targetType);
     }
 
+    private string ConvertValueToRuntimePointer(FunctionContext context, LlvmValue value)
+    {
+        if (value.SemanticType.IsReference || value.SemanticType.IsArray || value.SemanticType.IsList)
+        {
+            if (value.LlvmType == "i8*")
+            {
+                return value.Register;
+            }
+
+            return context.Emitter.EmitAssignment($"bitcast {value.LlvmType} {value.Register} to i8*");
+        }
+
+        var size = GetPrimitiveSizeInBytes(value.SemanticType);
+        var raw = context.Emitter.EmitAssignment($"call i8* @malloc(i64 {size})");
+        var typedPtr = context.Emitter.EmitAssignment($"bitcast i8* {raw} to {value.LlvmType}*");
+        context.Emitter.EmitRaw($"store {value.LlvmType} {value.Register}, {value.LlvmType}* {typedPtr}");
+        return raw;
+    }
+
+    private LlvmValue ConvertRuntimePointerToValue(FunctionContext context, string pointerRegister, SemanticType targetType)
+    {
+        if (targetType.IsReference || targetType.IsArray || targetType.IsList)
+        {
+            var llvmType = ResolveTypeName(targetType);
+            var bitcast = context.Emitter.EmitAssignment($"bitcast i8* {pointerRegister} to {llvmType}");
+            return new LlvmValue(bitcast, llvmType, targetType);
+        }
+
+        var targetLlvmType = ResolveTypeName(targetType);
+        var typedPtr = context.Emitter.EmitAssignment($"bitcast i8* {pointerRegister} to {targetLlvmType}*");
+        var loaded = context.Emitter.EmitAssignment($"load {targetLlvmType}, {targetLlvmType}* {typedPtr}");
+        return new LlvmValue(loaded, targetLlvmType, targetType);
+    }
+
     private LlvmValue ConvertValue(FunctionContext context, LlvmValue value, SemanticType targetType)
     {
         if (value.SemanticType.IsInteger && targetType.IsReal)
@@ -1087,6 +1305,56 @@ public sealed class LlvmGenerator
         }
 
         return new LlvmValue(value.Register, ResolveTypeName(targetType), targetType);
+    }
+
+    private static SemanticType CreateSemanticType(string name)
+    {
+        if (string.Equals(name, BuiltInTypes.Integer.Name, StringComparison.Ordinal))
+        {
+            return new SemanticType(name, TypeKind.Integer);
+        }
+
+        if (string.Equals(name, BuiltInTypes.Real.Name, StringComparison.Ordinal))
+        {
+            return new SemanticType(name, TypeKind.Real);
+        }
+
+        if (string.Equals(name, BuiltInTypes.Boolean.Name, StringComparison.Ordinal))
+        {
+            return new SemanticType(name, TypeKind.Boolean);
+        }
+
+        if (TypeNameHelper.IsArrayType(name))
+        {
+            return new SemanticType(name, TypeKind.Array);
+        }
+
+        if (TypeNameHelper.IsListType(name))
+        {
+            return new SemanticType(name, TypeKind.List);
+        }
+
+        return new SemanticType(name, TypeKind.Class);
+    }
+
+    private static int GetPrimitiveSizeInBytes(SemanticType type)
+    {
+        if (type.IsInteger)
+        {
+            return 4;
+        }
+
+        if (type.IsReal)
+        {
+            return 8;
+        }
+
+        if (type.IsBoolean)
+        {
+            return 1;
+        }
+
+        throw new InvalidOperationException($"Unable to determine size for primitive type '{type.Name}'.");
     }
 
     private string GetFieldPointer(FunctionContext context, LlvmValue instance, string fieldName, out FieldLayout? layout)
@@ -1254,6 +1522,16 @@ public sealed class LlvmGenerator
             return "i1";
         }
 
+        if (type.IsArray)
+        {
+            return "%Array*";
+        }
+
+        if (type.IsList)
+        {
+            return "%List*";
+        }
+
         if (type.IsVoid)
         {
             return "void";
@@ -1307,7 +1585,7 @@ public sealed class LlvmGenerator
         return false;
     }
 
-    private sealed record FieldLayout(string Name, string LlvmType, SemanticType SemanticType, int Index, bool IsHeader);
+    private sealed record FieldLayout(string Name, string LlvmType, SemanticType SemanticType, int Index);
 
     private sealed class ClassLayout
     {
@@ -1410,7 +1688,7 @@ public sealed class LlvmGenerator
             ClassLayout = layout;
             ReturnType = returnType;
             Emitter = emitter;
-            ThisValue = new LlvmValue("%this", $"%{layout.Name}*", new SemanticType(layout.Name, false, false));
+            ThisValue = new LlvmValue("%this", $"%{layout.Name}*", new SemanticType(layout.Name, TypeKind.Class));
         }
 
         public static FunctionContext ForMethod(ClassLayout layout, SemanticMethod method, FunctionEmitter emitter)
@@ -1423,7 +1701,7 @@ public sealed class LlvmGenerator
             return new FunctionContext(layout, SemanticTypeVoid, emitter);
         }
 
-        private static SemanticType SemanticTypeVoid => new("Void", true, false);
+        private static SemanticType SemanticTypeVoid => new("Void", TypeKind.Void);
 
         public ClassLayout ClassLayout { get; }
 

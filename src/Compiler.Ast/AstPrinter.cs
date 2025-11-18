@@ -255,6 +255,10 @@ namespace Compiler.Ast
             sb.AppendLine($"{Indent()}ConstructorCallNode");
             _indentLevel++;
             sb.AppendLine(FormatProperty("ClassName", node.ClassName));
+            if (node.GenericArgument is not null)
+            {
+                sb.AppendLine(FormatProperty("GenericArgument", node.GenericArgument));
+            }
             sb.AppendLine(FormatList("Arguments", node.Arguments));
             _indentLevel--;
             return sb.ToString();

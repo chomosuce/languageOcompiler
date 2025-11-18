@@ -483,4 +483,153 @@ end
         var singleItem = Assert.Single(body.Body.Items);
         Assert.IsType<ReturnStatementNode>(singleItem);
     }
+
+    [Fact]
+    public void ArrayConstructorsAndMethodsProduceSemanticTypes()
+    {
+        var source = @"
+class Sample is
+    method Build : Integer is
+        var data : Array[Integer](10)
+        var size : data.Length()
+        var first : data.get(0)
+        var updated : data.set(0, Integer(1))
+        data := updated
+        return size.Plus(first)
+    end
+end
+";
+
+        var program = SemanticTestHelper.ParseProgram(source);
+        var analyzer = new SemanticAnalyzer();
+        analyzer.Analyze(program);
+
+        var method = Assert.IsType<MethodDeclarationNode>(program.Classes.Single().Members.Single());
+        var body = Assert.IsType<BlockBodyNode>(method.Body);
+        var locals = body.Body.Items.OfType<VariableDeclarationNode>().ToArray();
+        Assert.Equal(4, locals.Length);
+
+        var model = analyzer.Model;
+        var dataCtor = Assert.IsType<ConstructorCallNode>(locals[0].InitialValue);
+        Assert.Equal("Array[Integer]", model.VariableTypes[locals[0]].Name);
+        Assert.True(model.VariableTypes[locals[0]].IsArray);
+        Assert.Equal("Array[Integer]", model.ExpressionTypes[dataCtor].Name);
+
+        var lengthCall = Assert.IsType<CallNode>(locals[1].InitialValue);
+        Assert.Equal("Integer", model.VariableTypes[locals[1]].Name);
+        Assert.Equal("Integer", model.ExpressionTypes[lengthCall].Name);
+
+        var getCall = Assert.IsType<CallNode>(locals[2].InitialValue);
+        Assert.Equal("Integer", model.VariableTypes[locals[2]].Name);
+        Assert.Equal("Integer", model.ExpressionTypes[getCall].Name);
+
+        var setCall = Assert.IsType<CallNode>(locals[3].InitialValue);
+        Assert.Equal("Array[Integer]", model.VariableTypes[locals[3]].Name);
+        Assert.Equal("Array[Integer]", model.ExpressionTypes[setCall].Name);
+    }
+
+    [Fact]
+    public void ArrayConstructorRequiresIntegerLength()
+    {
+        var source = @"
+class Sample is
+    method Build is
+        var invalid : Array[Integer](Boolean(true))
+    end
+end
+";
+
+        Assert.Throws<SemanticException>(() => SemanticTestHelper.Analyze(source));
+    }
+
+    [Fact]
+    public void ListConstructorsAndMethodsProduceSemanticTypes()
+    {
+        var source = @"
+class Item is
+end
+
+class Storage is
+    method Use : Integer is
+        var list : List[Item]()
+        var single : List[Item](Item())
+        var replicated : List[Item](Item(), 2)
+        var appended : list.append(Item())
+        var head : appended.head()
+        var tail : appended.tail()
+        var array : appended.toArray()
+        list := replicated
+        single := single.append(head)
+        list := tail.append(head)
+        return array.Length()
+    end
+end
+";
+
+        var program = SemanticTestHelper.ParseProgram(source);
+        var analyzer = new SemanticAnalyzer();
+        analyzer.Analyze(program);
+
+        var storage = program.Classes.Single(c => c.Name == "Storage");
+        var method = Assert.IsType<MethodDeclarationNode>(storage.Members.Single());
+        var body = Assert.IsType<BlockBodyNode>(method.Body);
+        var locals = body.Body.Items.OfType<VariableDeclarationNode>().ToArray();
+        Assert.Equal(7, locals.Length);
+
+        var model = analyzer.Model;
+        Assert.All(locals.Take(4), local =>
+        {
+            Assert.Equal("List[Item]", model.VariableTypes[local].Name);
+        });
+
+        Assert.Equal("Item", model.VariableTypes[locals[4]].Name);
+        Assert.Equal("List[Item]", model.VariableTypes[locals[5]].Name);
+        Assert.Equal("Array[Item]", model.VariableTypes[locals[6]].Name);
+
+        var appendCall = Assert.IsType<CallNode>(locals[3].InitialValue);
+        Assert.Equal("List[Item]", model.ExpressionTypes[appendCall].Name);
+
+        var headCall = Assert.IsType<CallNode>(locals[4].InitialValue);
+        Assert.Equal("Item", model.ExpressionTypes[headCall].Name);
+
+        var tailCall = Assert.IsType<CallNode>(locals[5].InitialValue);
+        Assert.Equal("List[Item]", model.ExpressionTypes[tailCall].Name);
+
+        var toArrayCall = Assert.IsType<CallNode>(locals[6].InitialValue);
+        Assert.Equal("Array[Item]", model.ExpressionTypes[toArrayCall].Name);
+    }
+
+    [Fact]
+    public void ListAppendRequiresMatchingElementType()
+    {
+        var source = @"
+class Item is
+end
+
+class Storage is
+    method Use is
+        var list : List[Item]()
+        var bad : list.append(Integer(1))
+    end
+end
+";
+
+        Assert.Throws<SemanticException>(() => SemanticTestHelper.Analyze(source));
+    }
+
+    [Fact]
+    public void ArrayAssignmentRequiresMatchingElementTypes()
+    {
+        var source = @"
+class Sample is
+    method Use is
+        var ints : Array[Integer](10)
+        var reals : Array[Real](10)
+        ints := reals
+    end
+end
+";
+
+        Assert.Throws<SemanticException>(() => SemanticTestHelper.Analyze(source));
+    }
 }

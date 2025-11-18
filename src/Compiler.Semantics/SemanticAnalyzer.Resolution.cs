@@ -96,12 +96,12 @@ public sealed partial class SemanticAnalyzer
 
         if (_builtInTypes.Contains(targetType.Name))
         {
-            return TypeSymbol.Unknown;
+            return TypeSymbol.Standard;
         }
 
-        if (targetType.IsUnknown)
+        if (targetType.IsStandard)
         {
-            return TypeSymbol.Unknown;
+            return TypeSymbol.Standard;
         }
 
         throw new SemanticException($"Type '{targetType.Name}' is not declared.", memberAccess.Target);
@@ -130,7 +130,7 @@ public sealed partial class SemanticAnalyzer
 
     private void EnsureBooleanExpression(TypeSymbol type, Expression expression)
     {
-        if (type.IsUnknown || type.Name == TypeSymbol.Boolean.Name)
+        if (type.IsStandard || type.Name == TypeSymbol.Boolean.Name)
         {
             return;
         }
@@ -140,7 +140,7 @@ public sealed partial class SemanticAnalyzer
 
     private void EnsureTypesCompatible(TypeSymbol expected, TypeSymbol actual, Node node)
     {
-        if (expected.IsUnknown || actual.IsUnknown)
+        if (expected.IsStandard || actual.IsStandard)
         {
             return;
         }
@@ -168,15 +168,33 @@ public sealed partial class SemanticAnalyzer
             return TypeSymbol.Void;
         }
 
-        if (_builtInTypes.Contains(typeName) || _classes.ContainsKey(typeName))
+        if (_builtInTypes.Contains(typeName))
         {
-            return new TypeSymbol(typeName);
+            if (string.Equals(typeName, BuiltInTypes.Integer.Name, StringComparison.Ordinal))
+            {
+                return TypeSymbol.Integer;
+            }
+
+            if (string.Equals(typeName, BuiltInTypes.Real.Name, StringComparison.Ordinal))
+            {
+                return TypeSymbol.Real;
+            }
+
+            if (string.Equals(typeName, BuiltInTypes.Boolean.Name, StringComparison.Ordinal))
+            {
+                return TypeSymbol.Boolean;
+            }
+        }
+
+        if (_classes.ContainsKey(typeName))
+        {
+            return new TypeSymbol(typeName, TypeKind.Class);
         }
 
         return typeName switch
         {
-            "Array" => new TypeSymbol(typeName),
-            "List" => new TypeSymbol(typeName),
+            "Array" => new TypeSymbol(typeName, TypeKind.Class),
+            "List" => new TypeSymbol(typeName, TypeKind.Class),
             _ => throw new SemanticException($"Type '{typeName}' is not declared.", node),
         };
     }
@@ -185,8 +203,8 @@ public sealed partial class SemanticAnalyzer
     {
         return typeNode switch
         {
-            ArrayTypeNode arrayType => new TypeSymbol($"Array[{ResolveTypeNode(arrayType.ElementType, context).Name}]"),
-            ListTypeNode listType => new TypeSymbol($"List[{ResolveTypeNode(listType.ElementType, context).Name}]"),
+            ArrayTypeNode arrayType => new TypeSymbol($"Array[{ResolveTypeNode(arrayType.ElementType, context).Name}]", TypeKind.Array),
+            ListTypeNode listType => new TypeSymbol($"List[{ResolveTypeNode(listType.ElementType, context).Name}]", TypeKind.List),
             _ => ResolveNamedType(typeNode.Name, typeNode),
         };
     }

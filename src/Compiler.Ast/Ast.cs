@@ -291,7 +291,8 @@ namespace Compiler.Ast
     //   new ConstructorCallNode("Integer", [Int(5)])
     public record ConstructorCallNode(
         string ClassName,
-        List<Expression> Arguments
+        List<Expression> Arguments,
+        TypeNode? GenericArgument = null
     ) : Expression
     {
         public override T Accept<T>(IAstVisitor<T> visitor) => visitor.Visit(this);

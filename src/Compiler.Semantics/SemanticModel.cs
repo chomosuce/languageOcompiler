@@ -4,13 +4,44 @@ using Compiler.Ast;
 
 namespace Compiler.Semantics;
 
-public sealed record SemanticType(string Name, bool IsVoid, bool IsUnknown)
+public sealed record SemanticType(string Name, TypeKind Kind)
 {
-    public bool IsBoolean => string.Equals(Name, BuiltInTypes.Boolean.Name, StringComparison.Ordinal);
-    public bool IsInteger => string.Equals(Name, BuiltInTypes.Integer.Name, StringComparison.Ordinal);
-    public bool IsReal => string.Equals(Name, BuiltInTypes.Real.Name, StringComparison.Ordinal);
-    public bool IsPrimitive => IsBoolean || IsInteger || IsReal;
-    public bool IsReference => !IsPrimitive && !IsVoid;
+    public bool IsVoid => Kind == TypeKind.Void;
+    public bool IsStandard => Kind == TypeKind.Standard;
+
+    public bool IsBoolean => Kind == TypeKind.Boolean;
+    public bool IsInteger => Kind == TypeKind.Integer;
+    public bool IsReal => Kind == TypeKind.Real;
+
+    public bool IsArray => Kind == TypeKind.Array;
+    public bool IsList => Kind == TypeKind.List;
+
+    public bool IsPrimitive => Kind is TypeKind.Boolean or TypeKind.Integer or TypeKind.Real;
+
+    public bool IsReference => Kind is TypeKind.Class or TypeKind.Array or TypeKind.List;
+
+    public bool TryGetArrayElementType(out string elementType)
+    {
+        if (Kind != TypeKind.Array)
+        {
+            elementType = string.Empty;
+            return false;
+        }
+
+        return TypeNameHelper.TryGetArrayElementType(Name, out elementType);
+    }
+
+    public bool TryGetListElementType(out string elementType)
+    {
+        if (Kind != TypeKind.List)
+        {
+            elementType = string.Empty;
+            return false;
+        }
+
+        return TypeNameHelper.TryGetListElementType(Name, out elementType);
+    }
+
 }
 
 public sealed record SemanticParameter(string Name, SemanticType Type, ParameterNode Node);

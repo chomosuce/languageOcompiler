@@ -317,21 +317,20 @@ constructor_invocation
     | class_name LPAREN arg_list RPAREN
         { $$ = AttachLocation(new ConstructorCallNode($1, $3), @1); }
     | IDENT LBRACKET type_name RBRACKET LPAREN RPAREN
-        { 
-            
+        {
             if ($1 == "Array")
-                $$ = AttachLocation(new ConstructorCallNode("Array", new List<Expression>()), @1);
+                $$ = AttachLocation(new ConstructorCallNode("Array", new List<Expression>(), $3), @1);
             else if ($1 == "List")
-                $$ = AttachLocation(new ConstructorCallNode("List", new List<Expression>()), @1);
+                $$ = AttachLocation(new ConstructorCallNode("List", new List<Expression>(), $3), @1);
             else
                 $$ = AttachLocation(new ConstructorCallNode($1, new List<Expression>()), @1);
         }
     | IDENT LBRACKET type_name RBRACKET LPAREN arg_list RPAREN
-        { 
+        {
             if ($1 == "Array")
-                $$ = AttachLocation(new ConstructorCallNode("Array", $6), @1);
+                $$ = AttachLocation(new ConstructorCallNode("Array", $6, $3), @1);
             else if ($1 == "List")
-                $$ = AttachLocation(new ConstructorCallNode("List", $6), @1);
+                $$ = AttachLocation(new ConstructorCallNode("List", $6, $3), @1);
             else
                 $$ = AttachLocation(new ConstructorCallNode($1, $6), @1);
         }

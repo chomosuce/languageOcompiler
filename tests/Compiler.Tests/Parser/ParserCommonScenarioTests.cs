@@ -322,6 +322,48 @@ Classes: [
     }
 
     [Fact]
+    public void ParsesGenericArrayAndListConstructors()
+    {
+        var source = @"
+class Collections is
+    method Build is
+        var numbers : Array[Integer](10)
+        var reals : List[Real]()
+        var fromValue : List[Real](1.0)
+        var replicated : List[Real](1.0, 3)
+    end
+end
+";
+
+        var program = ParserTestHelper.ParseProgram(source);
+        var cls = Assert.Single(program.Classes);
+        var method = Assert.IsType<MethodDeclarationNode>(Assert.Single(cls.Members));
+        var body = Assert.IsType<BlockBodyNode>(method.Body);
+        var locals = body.Body.Items.OfType<VariableDeclarationNode>().ToArray();
+        Assert.Equal(4, locals.Length);
+
+        var arrayCtor = Assert.IsType<ConstructorCallNode>(locals[0].InitialValue);
+        Assert.Equal("Array", arrayCtor.ClassName);
+        Assert.NotNull(arrayCtor.GenericArgument);
+        Assert.Equal("Integer", arrayCtor.GenericArgument!.Name);
+
+        var listCtor = Assert.IsType<ConstructorCallNode>(locals[1].InitialValue);
+        Assert.Equal("List", listCtor.ClassName);
+        Assert.NotNull(listCtor.GenericArgument);
+        Assert.Equal("Real", listCtor.GenericArgument!.Name);
+
+        var fromValue = Assert.IsType<ConstructorCallNode>(locals[2].InitialValue);
+        Assert.Equal("List", fromValue.ClassName);
+        Assert.NotNull(fromValue.GenericArgument);
+        Assert.Equal("Real", fromValue.GenericArgument!.Name);
+
+        var replicated = Assert.IsType<ConstructorCallNode>(locals[3].InitialValue);
+        Assert.Equal("List", replicated.ClassName);
+        Assert.NotNull(replicated.GenericArgument);
+        Assert.Equal("Real", replicated.GenericArgument!.Name);
+    }
+
+    [Fact]
     public void ParsesControlFlowAndCallChains()
     {
         var source = @"
@@ -639,6 +681,8 @@ Classes: [
           InitialValue:
           ConstructorCallNode
             ClassName: Array
+              GenericArgument:
+              TypeNode(Name: Integer)
             Arguments: [
               IntegerLiteralNode(Value: 10)
             ]
@@ -682,6 +726,8 @@ Classes: [
                     Value:
                     ConstructorCallNode
                       ClassName: Array
+                        GenericArgument:
+                        TypeNode(Name: Integer)
                       Arguments: [
                         IntegerLiteralNode(Value: 5)
                       ]

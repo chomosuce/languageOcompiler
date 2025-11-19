@@ -251,7 +251,7 @@ public sealed partial class SemanticAnalyzer
             return false;
         }
 
-        var elementType = new TypeSymbol(elementTypeName, TypeKind.Class);
+        var elementType = ResolveNamedType(elementTypeName, call);
 
         switch (methodName)
         {
@@ -304,7 +304,7 @@ public sealed partial class SemanticAnalyzer
             return false;
         }
 
-        var elementType = new TypeSymbol(elementTypeName, TypeKind.Class);
+        var elementType = ResolveNamedType(elementTypeName, call);
 
         switch (methodName)
         {

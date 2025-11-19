@@ -655,10 +655,27 @@ public sealed class LlvmGenerator
             return EmitListConstructor(context, arguments, semanticType);
         }
 
+        if (semanticType.IsInteger || semanticType.IsReal || semanticType.IsBoolean)
+        {
+            if (arguments.Count == 0)
+            {
+                var defaultValue = GetDefaultValue(ResolveTypeName(semanticType));
+                return new LlvmValue(defaultValue, ResolveTypeName(semanticType), semanticType);
+            }
+
+            if (arguments.Count == 1)
+            {
+                return EnsureType(context, arguments[0], semanticType);
+            }
+
+            context.Emitter.EmitRaw("; Primitive constructor expects at most one argument");
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(semanticType)), ResolveTypeName(semanticType), semanticType);
+        }
+
         if (!_layouts.TryGetValue(constructorCall.ClassName, out var layout))
         {
             context.Emitter.EmitRaw($"; Unknown constructor target '{constructorCall.ClassName}'");
-            return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
+            return new LlvmValue(GetDefaultValue(ResolveTypeName(semanticType)), ResolveTypeName(semanticType), semanticType);
         }
 
         var sizePtr = context.Emitter.EmitAssignment($"getelementptr %{layout.Name}, %{layout.Name}* null, i32 1");

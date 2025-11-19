@@ -14,6 +14,11 @@ public sealed class LlvmGenerator
     private readonly Dictionary<string, ClassLayout> _layouts = new(StringComparer.Ordinal);
     private int _nextClassId;
 
+    private const string IntegerFormatGlobal = "@.fmt_int";
+    private const string RealFormatGlobal = "@.fmt_real";
+    private const int IntegerFormatLength = 4;
+    private const int RealFormatLength = 4;
+
     private static readonly SemanticType IntegerType = new(BuiltInTypes.Integer.Name, TypeKind.Integer);
     private static readonly SemanticType RealType = new(BuiltInTypes.Real.Name, TypeKind.Real);
     private static readonly SemanticType BooleanType = new(BuiltInTypes.Boolean.Name, TypeKind.Boolean);
@@ -37,6 +42,8 @@ public sealed class LlvmGenerator
         EmitRuntimeTypeDefinitions(builder);
         builder.AppendLine();
         EmitRuntimeDeclarations(builder);
+        builder.AppendLine();
+        EmitRuntimeConstants(builder);
         builder.AppendLine();
 
         EmitTypeDefinitions(builder, layouts);
@@ -136,6 +143,13 @@ public sealed class LlvmGenerator
         builder.AppendLine("declare i8* @o_list_head(%List*)");
         builder.AppendLine("declare %List* @o_list_tail(%List*)");
         builder.AppendLine("declare %Array* @o_list_to_array(%List*)");
+        builder.AppendLine("declare i32 @printf(i8*, ...)");
+    }
+
+    private static void EmitRuntimeConstants(StringBuilder builder)
+    {
+        builder.AppendLine(@"@.fmt_int = private unnamed_addr constant [4 x i8] c""%d\0A\00""");
+        builder.AppendLine(@"@.fmt_real = private unnamed_addr constant [4 x i8] c""%f\0A\00""");
     }
 
     private void EmitTypeDefinitions(StringBuilder builder, IReadOnlyDictionary<string, ClassLayout> layouts)
@@ -1108,6 +1122,13 @@ public sealed class LlvmGenerator
                 result = new LlvmValue(value, "i1", BooleanType);
                 return true;
             }
+
+            case "Print" when arguments.Count == 0:
+            {
+                EmitIntegerPrint(context, receiver);
+                result = receiver;
+                return true;
+            }
         }
 
         result = default;
@@ -1180,6 +1201,13 @@ public sealed class LlvmGenerator
                 result = new LlvmValue(value, "i32", IntegerType);
                 return true;
             }
+
+            case "Print" when arguments.Count == 0:
+            {
+                EmitRealPrint(context, receiver);
+                result = receiver;
+                return true;
+            }
         }
 
         result = default;
@@ -1227,10 +1255,44 @@ public sealed class LlvmGenerator
                 result = new LlvmValue(value, "i32", IntegerType);
                 return true;
             }
+
+            case "Print" when arguments.Count == 0:
+            {
+                EmitBooleanPrint(context, receiver);
+                result = receiver;
+                return true;
+            }
         }
 
         result = default;
         return false;
+    }
+
+    private void EmitIntegerPrint(FunctionContext context, LlvmValue value)
+    {
+        var ensured = EnsureType(context, value, IntegerType);
+        var formatPointer = GetFormatPointer(context, IntegerFormatGlobal, IntegerFormatLength);
+        context.Emitter.EmitRaw($"call i32 (i8*, ...) @printf(i8* {formatPointer}, i32 {ensured.Register})");
+    }
+
+    private void EmitRealPrint(FunctionContext context, LlvmValue value)
+    {
+        var ensured = EnsureType(context, value, RealType);
+        var formatPointer = GetFormatPointer(context, RealFormatGlobal, RealFormatLength);
+        context.Emitter.EmitRaw($"call i32 (i8*, ...) @printf(i8* {formatPointer}, double {ensured.Register})");
+    }
+
+    private void EmitBooleanPrint(FunctionContext context, LlvmValue value)
+    {
+        var ensured = EnsureType(context, value, BooleanType);
+        var promoted = context.Emitter.EmitAssignment($"zext i1 {ensured.Register} to i32");
+        var formatPointer = GetFormatPointer(context, IntegerFormatGlobal, IntegerFormatLength);
+        context.Emitter.EmitRaw($"call i32 (i8*, ...) @printf(i8* {formatPointer}, i32 {promoted})");
+    }
+
+    private string GetFormatPointer(FunctionContext context, string globalName, int length)
+    {
+        return context.Emitter.EmitAssignment($"getelementptr [{length} x i8], [{length} x i8]* {globalName}, i32 0, i32 0");
     }
 
     private LlvmValue EnsureType(FunctionContext context, LlvmValue value, SemanticType targetType)

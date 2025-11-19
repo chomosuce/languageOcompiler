@@ -214,6 +214,20 @@ public sealed partial class SemanticAnalyzer
 
     private bool TryResolveBuiltInMethod(TypeSymbol targetType, string methodName, IReadOnlyList<TypeSymbol> argumentTypes, CallNode call, out TypeSymbol result)
     {
+        if ((string.Equals(targetType.Name, BuiltInTypes.Integer.Name, StringComparison.Ordinal) ||
+             string.Equals(targetType.Name, BuiltInTypes.Real.Name, StringComparison.Ordinal) ||
+             string.Equals(targetType.Name, BuiltInTypes.Boolean.Name, StringComparison.Ordinal)) &&
+            string.Equals(methodName, "Print", StringComparison.Ordinal))
+        {
+            if (argumentTypes.Count != 0)
+            {
+                throw new SemanticException("Print() does not accept arguments.", call);
+            }
+
+            result = targetType;
+            return true;
+        }
+
         if (targetType.IsArray && TryResolveArrayMethod(targetType, methodName, argumentTypes, call, out result))
         {
             return true;

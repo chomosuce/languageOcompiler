@@ -52,10 +52,11 @@ public sealed partial class SemanticAnalyzer
             {
                 break;
             }
-
+            
             if (item is VariableDeclarationNode local &&
                 _variableSymbols.TryGetValue(local, out var symbol) &&
-                !symbol.IsUsed)
+                !symbol.IsUsed &&
+                !HasSideEffects(local.InitialValue))
             {
                 continue;
             }
@@ -73,5 +74,39 @@ public sealed partial class SemanticAnalyzer
             body.Items.Clear();
             body.Items.AddRange(optimized);
         }
+    }
+
+    private bool HasSideEffects(Expression expression)
+    {
+        switch (expression)
+        {
+            case CallNode:
+                return true;
+
+            case ConstructorCallNode ctor:
+                return IsUserDefinedConstructor(ctor.ClassName);
+
+            case MemberAccessNode memberAccess:
+                return HasSideEffects(memberAccess.Target);
+
+            default:
+                return false;
+        }
+    }
+
+    private bool IsUserDefinedConstructor(string className)
+    {
+        if (_builtInTypes.Contains(className))
+        {
+            return false;
+        }
+
+        if (string.Equals(className, "Array", StringComparison.Ordinal) ||
+            string.Equals(className, "List", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return _classes.ContainsKey(className);
     }
 }

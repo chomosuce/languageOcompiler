@@ -9,9 +9,16 @@ class Entry
 {
     static void Main(string[] args)
     {
-        var src = args.Length > 0
-            ? File.ReadAllText(args[0])
+        var inputProvided = args.Length > 0;
+        var inputPath = inputProvided ? args[0] : string.Empty;
+        var src = inputProvided
+            ? File.ReadAllText(inputPath)
             : "class Main is\n    var x : 42\nend\n";
+
+        var outputPath = inputProvided
+            ? Path.ChangeExtension(inputPath, ".ll")
+            : Path.Combine(Environment.CurrentDirectory, "output.ll");
+
         using var reader = new StringReader(src);
 
         var scanner = new Scanner(reader);
@@ -35,6 +42,9 @@ class Entry
 
                     Console.WriteLine(";; ---- LLVM IR ----");
                     Console.WriteLine(llvmIr);
+
+                    File.WriteAllText(outputPath, llvmIr);
+                    Console.WriteLine($"LLVM IR written to {outputPath}");
                 }
                 catch (SemanticException ex)
                 {

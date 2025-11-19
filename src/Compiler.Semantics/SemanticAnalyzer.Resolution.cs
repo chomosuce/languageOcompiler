@@ -9,31 +9,53 @@ public sealed partial class SemanticAnalyzer
 {
     private MethodSymbol ResolveMethodOrThrow(ClassSymbol classSymbol, string name, IReadOnlyList<TypeSymbol> argumentTypes, Node call)
     {
-        var methods = classSymbol.FindMethods(name);
+        var current = classSymbol;
+        var foundAny = false;
+        var sawOverloads = false;
 
-        if (methods.Count == 0)
+        while (true)
+        {
+            var methods = current.FindMethods(name);
+
+            if (methods.Count > 0)
+            {
+                foundAny = true;
+
+                if (methods.Count == 1)
+                {
+                    var single = methods[0];
+                    if (single.ArgumentsMatch(argumentTypes))
+                    {
+                        return single;
+                    }
+                }
+                else
+                {
+                    sawOverloads = true;
+                    foreach (var method in methods)
+                    {
+                        if (method.ArgumentsMatch(argumentTypes))
+                        {
+                            return method;
+                        }
+                    }
+                }
+            }
+
+            if (current.BaseClassName is null || !_classes.TryGetValue(current.BaseClassName, out current))
+            {
+                break;
+            }
+        }
+
+        if (!foundAny)
         {
             throw new SemanticException($"Method '{name}' is not declared on type '{classSymbol.Name}'.", call);
         }
 
-        if (methods.Count == 1)
+        if (!sawOverloads)
         {
-            var single = methods[0];
-
-            if (single.ArgumentsMatch(argumentTypes))
-            {
-                return single;
-            }
-
             throw new SemanticException($"Arguments do not match the signature of method '{name}'.", call);
-        }
-
-        foreach (var method in methods)
-        {
-            if (method.ArgumentsMatch(argumentTypes))
-            {
-                return method;
-            }
         }
 
         throw new SemanticException($"No overload for method '{name}' matches the provided arguments.", call);

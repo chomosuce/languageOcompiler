@@ -810,7 +810,8 @@ public sealed class LlvmGenerator
             return new LlvmValue(GetDefaultValue(ResolveTypeName(returnType)), ResolveTypeName(returnType), returnType);
         }
 
-        var signature = new MethodSignature(methodName, arguments.Select(arg => GetCanonicalTypeName(arg.SemanticType)).ToArray());
+        var signatureParameterKey = string.Join(",", arguments.Select(arg => GetCanonicalTypeName(arg.SemanticType)));
+        var signature = new MethodSignature(methodName, signatureParameterKey);
         var cases = CollectDispatchCases(staticLayout, signature).ToList();
 
         if (cases.Count == 0)
@@ -1514,10 +1515,9 @@ public sealed class LlvmGenerator
 
     private MethodSignature CreateMethodSignature(SemanticMethod method)
     {
-        var parameterTypes = method.Parameters
-            .Select(parameter => GetCanonicalTypeName(parameter.Type))
-            .ToArray();
-        return new MethodSignature(method.Name, parameterTypes);
+        var parameterTypesKey = string.Join(",", method.Parameters
+            .Select(parameter => GetCanonicalTypeName(parameter.Type)));
+        return new MethodSignature(method.Name, parameterTypesKey);
     }
 
     private static string GetCanonicalTypeName(SemanticType type)
@@ -1676,7 +1676,7 @@ public sealed class LlvmGenerator
         public List<ClassLayout> DerivedClasses { get; }
     }
 
-    private sealed record MethodSignature(string Name, IReadOnlyList<string> ParameterTypes);
+    private sealed record MethodSignature(string Name, string ParameterTypesKey);
 
     private sealed record MethodImplementation(ClassLayout DeclaringClass, SemanticMethod Method);
 

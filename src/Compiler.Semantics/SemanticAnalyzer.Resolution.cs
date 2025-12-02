@@ -216,7 +216,6 @@ public sealed partial class SemanticAnalyzer
         return typeName switch
         {
             "Array" => new TypeSymbol(typeName, TypeKind.Class),
-            "List" => new TypeSymbol(typeName, TypeKind.Class),
             _ => throw new SemanticException($"Type '{typeName}' is not declared.", node),
         };
     }
@@ -226,7 +225,6 @@ public sealed partial class SemanticAnalyzer
         return typeNode switch
         {
             ArrayTypeNode arrayType => new TypeSymbol($"Array[{ResolveTypeNode(arrayType.ElementType, context).Name}]", TypeKind.Array),
-            ListTypeNode listType => new TypeSymbol($"List[{ResolveTypeNode(listType.ElementType, context).Name}]", TypeKind.List),
             _ => ResolveNamedType(typeNode.Name, typeNode),
         };
     }

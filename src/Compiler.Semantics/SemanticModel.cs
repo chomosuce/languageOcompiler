@@ -14,11 +14,9 @@ public sealed record SemanticType(string Name, TypeKind Kind)
     public bool IsReal => Kind == TypeKind.Real;
 
     public bool IsArray => Kind == TypeKind.Array;
-    public bool IsList => Kind == TypeKind.List;
-
     public bool IsPrimitive => Kind is TypeKind.Boolean or TypeKind.Integer or TypeKind.Real;
 
-    public bool IsReference => Kind is TypeKind.Class or TypeKind.Array or TypeKind.List;
+    public bool IsReference => Kind is TypeKind.Class or TypeKind.Array;
 
     public bool TryGetArrayElementType(out string elementType)
     {
@@ -29,17 +27,6 @@ public sealed record SemanticType(string Name, TypeKind Kind)
         }
 
         return TypeNameHelper.TryGetArrayElementType(Name, out elementType);
-    }
-
-    public bool TryGetListElementType(out string elementType)
-    {
-        if (Kind != TypeKind.List)
-        {
-            elementType = string.Empty;
-            return false;
-        }
-
-        return TypeNameHelper.TryGetListElementType(Name, out elementType);
     }
 
 }

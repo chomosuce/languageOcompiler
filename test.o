@@ -1,16 +1,16 @@
-class Sample is
-    this() is 
+class Sample is 
+    this () is 
     end
-    var x : Integer(1)
-    method M1 : Integer is
-        return x.Plus(Integer(2))
+    method foo : Integer is
+        return Integer(1)
     end
 end
 
 
 class Main is
+    var s: Sample()
     this() is
-        var s : Sample()
-        var z : s.M1().Print()
+        s := Sample()
+        var _ : s.foo().Print()
     end
 end

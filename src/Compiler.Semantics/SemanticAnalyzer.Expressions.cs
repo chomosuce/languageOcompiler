@@ -64,11 +64,6 @@ public sealed partial class SemanticAnalyzer
             return arrayType;
         }
 
-        if (TryAnalyzeListConstructor(constructorCall, scope, classSymbol, context, loopDepth, out var listType))
-        {
-            return listType;
-        }
-
         var argumentTypes = constructorCall.Arguments
             .Select(argument => EvaluateExpression(argument, scope, classSymbol, context, loopDepth))
             .ToList();
@@ -111,51 +106,6 @@ public sealed partial class SemanticAnalyzer
         }
 
         result = new TypeSymbol($"Array[{elementType.Name}]", TypeKind.Array);
-        return true;
-    }
-
-    private bool TryAnalyzeListConstructor(ConstructorCallNode constructorCall, Scope scope, ClassSymbol classSymbol, MethodContext context, int loopDepth, out TypeSymbol result)
-    {
-        result = TypeSymbol.Standard;
-
-        if (!string.Equals(constructorCall.ClassName, "List", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (constructorCall.GenericArgument is null)
-        {
-            throw new SemanticException("List constructor requires element type specification.", constructorCall);
-        }
-
-        var elementType = ResolveTypeNode(constructorCall.GenericArgument, constructorCall);
-
-        switch (constructorCall.Arguments.Count)
-        {
-            case 0:
-                break;
-            case 1:
-            {
-                var argumentType = EvaluateExpression(constructorCall.Arguments[0], scope, classSymbol, context, loopDepth);
-                EnsureTypesCompatible(elementType, argumentType, constructorCall.Arguments[0]);
-                break;
-            }
-            case 2:
-            {
-                var valueType = EvaluateExpression(constructorCall.Arguments[0], scope, classSymbol, context, loopDepth);
-                EnsureTypesCompatible(elementType, valueType, constructorCall.Arguments[0]);
-                var countType = EvaluateExpression(constructorCall.Arguments[1], scope, classSymbol, context, loopDepth);
-                if (!string.Equals(countType.Name, BuiltInTypes.Integer.Name, StringComparison.Ordinal))
-                {
-                    throw new SemanticException("List count argument must be of type Integer.", constructorCall.Arguments[1]);
-                }
-                break;
-            }
-            default:
-                throw new SemanticException("Unsupported List constructor arity.", constructorCall);
-        }
-
-        result = new TypeSymbol($"List[{elementType.Name}]", TypeKind.List);
         return true;
     }
 
@@ -233,11 +183,6 @@ public sealed partial class SemanticAnalyzer
             return true;
         }
 
-        if (targetType.IsList && TryResolveListMethod(targetType, methodName, argumentTypes, call, out result))
-        {
-            return true;
-        }
-
         result = TypeSymbol.Standard;
         return false;
     }
@@ -295,65 +240,4 @@ public sealed partial class SemanticAnalyzer
         return false;
     }
 
-    private bool TryResolveListMethod(TypeSymbol listType, string methodName, IReadOnlyList<TypeSymbol> argumentTypes, CallNode call, out TypeSymbol result)
-    {
-        result = TypeSymbol.Standard;
-
-        if (!listType.TryGetListElementType(out var elementTypeName))
-        {
-            return false;
-        }
-
-        var elementType = ResolveNamedType(elementTypeName, call);
-
-        switch (methodName)
-        {
-            case "append":
-            {
-                if (argumentTypes.Count != 1)
-                {
-                    throw new SemanticException("List.append(value) expects a single argument.", call);
-                }
-
-                EnsureTypesCompatible(elementType, argumentTypes[0], call);
-                result = new TypeSymbol(listType.Name, TypeKind.List);
-                return true;
-            }
-
-            case "head":
-            {
-                if (argumentTypes.Count != 0)
-                {
-                    throw new SemanticException("List.head() does not accept arguments.", call);
-                }
-
-                result = elementType;
-                return true;
-            }
-
-            case "tail":
-            {
-                if (argumentTypes.Count != 0)
-                {
-                    throw new SemanticException("List.tail() does not accept arguments.", call);
-                }
-
-                result = new TypeSymbol(listType.Name, TypeKind.List);
-                return true;
-            }
-
-            case "toArray":
-            {
-                if (argumentTypes.Count != 0)
-                {
-                    throw new SemanticException("List.toArray() does not accept arguments.", call);
-                }
-
-                result = new TypeSymbol($"Array[{elementType.Name}]", TypeKind.Array);
-                return true;
-            }
-        }
-
-        return false;
-    }
 }

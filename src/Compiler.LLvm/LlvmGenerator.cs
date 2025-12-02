@@ -126,7 +126,6 @@ public sealed class LlvmGenerator
     private static void EmitRuntimeTypeDefinitions(StringBuilder builder)
     {
         builder.AppendLine("%Array = type { i32, i8* }");
-        builder.AppendLine("%List = type { i8* }");
     }
 
     private static void EmitRuntimeDeclarations(StringBuilder builder)
@@ -136,13 +135,6 @@ public sealed class LlvmGenerator
         builder.AppendLine("declare i32 @o_array_length(%Array*)");
         builder.AppendLine("declare i8* @o_array_get(%Array*, i32)");
         builder.AppendLine("declare void @o_array_set(%Array*, i32, i8*)");
-        builder.AppendLine("declare %List* @o_list_empty()");
-        builder.AppendLine("declare %List* @o_list_singleton(i8*)");
-        builder.AppendLine("declare %List* @o_list_replicate(i8*, i32)");
-        builder.AppendLine("declare %List* @o_list_append(%List*, i8*)");
-        builder.AppendLine("declare i8* @o_list_head(%List*)");
-        builder.AppendLine("declare %List* @o_list_tail(%List*)");
-        builder.AppendLine("declare %Array* @o_list_to_array(%List*)");
         builder.AppendLine("declare i32 @printf(i8*, ...)");
     }
 
@@ -650,11 +642,6 @@ public sealed class LlvmGenerator
             return EmitArrayConstructor(context, arguments, semanticType);
         }
 
-        if (semanticType.IsList)
-        {
-            return EmitListConstructor(context, arguments, semanticType);
-        }
-
         if (semanticType.IsInteger || semanticType.IsReal || semanticType.IsBoolean)
         {
             if (arguments.Count == 0)
@@ -717,44 +704,6 @@ public sealed class LlvmGenerator
         var lengthValue = EnsureType(context, arguments[0], IntegerType);
         var arrayInstance = context.Emitter.EmitAssignment($"call %Array* @o_array_new(i32 {lengthValue.Register})");
         return new LlvmValue(arrayInstance, ResolveTypeName(semanticType), semanticType);
-    }
-
-    private LlvmValue EmitListConstructor(FunctionContext context, IReadOnlyList<LlvmValue> arguments, SemanticType semanticType)
-    {
-        if (!semanticType.TryGetListElementType(out var elementTypeName))
-        {
-            return new LlvmValue("null", ResolveTypeName(semanticType), semanticType);
-        }
-
-        var elementType = CreateSemanticType(elementTypeName);
-        var listTypeName = ResolveTypeName(semanticType);
-
-        switch (arguments.Count)
-        {
-            case 0:
-            {
-                var empty = context.Emitter.EmitAssignment("call %List* @o_list_empty()");
-                return new LlvmValue(empty, listTypeName, semanticType);
-            }
-            case 1:
-            {
-                var value = EnsureType(context, arguments[0], elementType);
-                var pointer = ConvertValueToRuntimePointer(context, value);
-                var single = context.Emitter.EmitAssignment($"call %List* @o_list_singleton(i8* {pointer})");
-                return new LlvmValue(single, listTypeName, semanticType);
-            }
-            case 2:
-            {
-                var value = EnsureType(context, arguments[0], elementType);
-                var pointer = ConvertValueToRuntimePointer(context, value);
-                var count = EnsureType(context, arguments[1], IntegerType);
-                var replicated = context.Emitter.EmitAssignment($"call %List* @o_list_replicate(i8* {pointer}, i32 {count.Register})");
-                return new LlvmValue(replicated, listTypeName, semanticType);
-            }
-            default:
-                context.Emitter.EmitRaw("; Unsupported List constructor arity");
-                return new LlvmValue("null", listTypeName, semanticType);
-        }
     }
 
     private SemanticConstructor? ResolveConstructor(ClassLayout layout, IReadOnlyList<SemanticType> argumentTypes)
@@ -946,11 +895,6 @@ public sealed class LlvmGenerator
             return TryEmitArrayBuiltin(context, receiver, methodName, arguments, returnType, out result);
         }
 
-        if (receiver.SemanticType.IsList)
-        {
-            return TryEmitListBuiltin(context, receiver, methodName, arguments, returnType, out result);
-        }
-
         if (receiver.SemanticType.IsInteger)
         {
             return TryEmitIntegerBuiltin(context, receiver, methodName, arguments, returnType, out result);
@@ -1005,53 +949,6 @@ public sealed class LlvmGenerator
                 var pointer = ConvertValueToRuntimePointer(context, value);
                 context.Emitter.EmitRaw($"call void @o_array_set(%Array* {receiver.Register}, i32 {index.Register}, i8* {pointer})");
                 result = new LlvmValue(receiver.Register, receiver.LlvmType, receiver.SemanticType);
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private bool TryEmitListBuiltin(FunctionContext context, LlvmValue receiver, string methodName, IReadOnlyList<LlvmValue> arguments, SemanticType returnType, out LlvmValue result)
-    {
-        result = default;
-
-        if (!receiver.SemanticType.TryGetListElementType(out var elementTypeName))
-        {
-            return false;
-        }
-
-        var elementType = CreateSemanticType(elementTypeName);
-
-        switch (methodName)
-        {
-            case "append" when arguments.Count == 1:
-            {
-                var value = EnsureType(context, arguments[0], elementType);
-                var pointer = ConvertValueToRuntimePointer(context, value);
-                var appended = context.Emitter.EmitAssignment($"call %List* @o_list_append(%List* {receiver.Register}, i8* {pointer})");
-                result = new LlvmValue(appended, ResolveTypeName(returnType), returnType);
-                return true;
-            }
-
-            case "head" when arguments.Count == 0:
-            {
-                var raw = context.Emitter.EmitAssignment($"call i8* @o_list_head(%List* {receiver.Register})");
-                result = ConvertRuntimePointerToValue(context, raw, returnType);
-                return true;
-            }
-
-            case "tail" when arguments.Count == 0:
-            {
-                var tail = context.Emitter.EmitAssignment($"call %List* @o_list_tail(%List* {receiver.Register})");
-                result = new LlvmValue(tail, ResolveTypeName(returnType), returnType);
-                return true;
-            }
-
-            case "toArray" when arguments.Count == 0:
-            {
-                var arrayValue = context.Emitter.EmitAssignment($"call %Array* @o_list_to_array(%List* {receiver.Register})");
-                result = new LlvmValue(arrayValue, ResolveTypeName(returnType), returnType);
                 return true;
             }
         }
@@ -1326,7 +1223,7 @@ public sealed class LlvmGenerator
 
     private string ConvertValueToRuntimePointer(FunctionContext context, LlvmValue value)
     {
-        if (value.SemanticType.IsReference || value.SemanticType.IsArray || value.SemanticType.IsList)
+        if (value.SemanticType.IsReference || value.SemanticType.IsArray)
         {
             if (value.LlvmType == "i8*")
             {
@@ -1345,7 +1242,7 @@ public sealed class LlvmGenerator
 
     private LlvmValue ConvertRuntimePointerToValue(FunctionContext context, string pointerRegister, SemanticType targetType)
     {
-        if (targetType.IsReference || targetType.IsArray || targetType.IsList)
+        if (targetType.IsReference || targetType.IsArray)
         {
             var llvmType = ResolveTypeName(targetType);
             var bitcast = context.Emitter.EmitAssignment($"bitcast i8* {pointerRegister} to {llvmType}");
@@ -1407,11 +1304,6 @@ public sealed class LlvmGenerator
         if (TypeNameHelper.IsArrayType(name))
         {
             return new SemanticType(name, TypeKind.Array);
-        }
-
-        if (TypeNameHelper.IsListType(name))
-        {
-            return new SemanticType(name, TypeKind.List);
         }
 
         return new SemanticType(name, TypeKind.Class);
@@ -1604,11 +1496,6 @@ public sealed class LlvmGenerator
         if (type.IsArray)
         {
             return "%Array*";
-        }
-
-        if (type.IsList)
-        {
-            return "%List*";
         }
 
         if (type.IsVoid)

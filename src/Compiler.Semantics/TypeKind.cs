@@ -8,7 +8,5 @@ public enum TypeKind
     Integer,
     Real,
     Array,
-    List,
     Class,
 }
-

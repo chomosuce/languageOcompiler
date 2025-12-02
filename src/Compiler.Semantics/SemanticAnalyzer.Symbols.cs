@@ -18,7 +18,6 @@ public sealed partial class SemanticAnalyzer
         public bool IsVoid => Kind == TypeKind.Void;
         public bool IsStandard => Kind == TypeKind.Standard;
         public bool IsArray => Kind == TypeKind.Array;
-        public bool IsList => Kind == TypeKind.List;
 
         public bool TryGetArrayElementType(out string elementType)
         {
@@ -29,17 +28,6 @@ public sealed partial class SemanticAnalyzer
             }
 
             return TypeNameHelper.TryGetArrayElementType(Name, out elementType);
-        }
-
-        public bool TryGetListElementType(out string elementType)
-        {
-            if (Kind != TypeKind.List)
-            {
-                elementType = string.Empty;
-                return false;
-            }
-
-            return TypeNameHelper.TryGetListElementType(Name, out elementType);
         }
 
         public override string ToString() => Name;

@@ -1,31 +1,17 @@
-class ListTest is
-    var numbers : List[Integer]()
-    
-    this() is
-        numbers := List[Integer]()
-        numbers := numbers.append(Integer(1))
-        numbers := numbers.append(Integer(2))
-        numbers := numbers.append(Integer(3))
-    end
-    
-    method sumList : Integer is
-        var total : Integer(0)
-        var current : List[Real]()
-        current := numbers
-        var b : Boolean(true)
+class Playground is
+    var total : Integer(0)
+    var flag : Boolean(true)
 
-        while b loop
-            total := total.Plus(current.head())
-            current := current.tail()
-        end
-        
-        return total
+    this() is
+        total := Integer(1)
+        flag := Boolean(false)
+    end
+
+    method inc(step: Integer) is
+        total := total.Plus(step)
+    end
+
+    method twice(value: Integer) : Integer is
+        return value.Plus(value)
     end
 end
-
-
-// i.Plus(1)
-// intArray.set(i, i.Mult(2))
-
-//i := i.Plus(i.Plus(3))
-// var q : intArray.set(i, i.Mult(2))

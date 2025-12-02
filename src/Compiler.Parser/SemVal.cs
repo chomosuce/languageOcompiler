@@ -141,7 +141,6 @@ namespace Compiler.Parser
         public static implicit operator SemVal(double value) => new SemVal(value, realValue: value);
         public static implicit operator SemVal(bool value) => new SemVal(value, boolValue: value);
         public static implicit operator SemVal?(ArrayTypeNode? value) => value is null ? null : new SemVal(value);
-        public static implicit operator SemVal?(ListTypeNode? value) => value is null ? null : new SemVal(value);
 
         // Symmetric conversions: allow grammar code to pull the boxed AST node or primitive back out
         public static implicit operator ProgramNode?(SemVal? value) => Allow<ProgramNode>(value);
@@ -163,6 +162,5 @@ namespace Compiler.Parser
         public static implicit operator double(SemVal? value) => value?.Real ?? throw Missing("Semantic value does not contain a real literal.");
         public static implicit operator bool(SemVal? value) => value?.Bool ?? throw Missing("Semantic value does not contain a boolean literal.");
         public static implicit operator ArrayTypeNode?(SemVal? value) => Allow<ArrayTypeNode>(value);
-        public static implicit operator ListTypeNode?(SemVal? value) => Allow<ListTypeNode>(value);
     }
 }

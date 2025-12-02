@@ -101,8 +101,7 @@ public sealed partial class SemanticAnalyzer
             return false;
         }
 
-        if (string.Equals(className, "Array", StringComparison.Ordinal) ||
-            string.Equals(className, "List", StringComparison.Ordinal))
+        if (string.Equals(className, "Array", StringComparison.Ordinal))
         {
             return false;
         }

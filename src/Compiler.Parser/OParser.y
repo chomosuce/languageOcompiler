@@ -108,7 +108,6 @@ var_decl
 type_name
     : class_name                         { $$ = AttachLocation(new TypeNode($1), @1); }
     | array_type                         { $$ = $1; }
-    | list_type                          { $$ = $1; }
     ;
 
 /* Array type: Array [ TypeName ] */
@@ -116,14 +115,6 @@ array_type
     : IDENT LBRACKET type_name RBRACKET
         {
             $$ = AttachLocation(new ArrayTypeNode($3), @1);
-        }
-    ;
-
-/* List type: List [ TypeName ] */
-list_type
-    : IDENT LBRACKET type_name RBRACKET
-        {
-            $$ = AttachLocation(new ListTypeNode($3), @1);
         }
     ;
 
@@ -320,8 +311,6 @@ constructor_invocation
         {
             if ($1 == "Array")
                 $$ = AttachLocation(new ConstructorCallNode("Array", new List<Expression>(), $3), @1);
-            else if ($1 == "List")
-                $$ = AttachLocation(new ConstructorCallNode("List", new List<Expression>(), $3), @1);
             else
                 $$ = AttachLocation(new ConstructorCallNode($1, new List<Expression>()), @1);
         }
@@ -329,8 +318,6 @@ constructor_invocation
         {
             if ($1 == "Array")
                 $$ = AttachLocation(new ConstructorCallNode("Array", $6, $3), @1);
-            else if ($1 == "List")
-                $$ = AttachLocation(new ConstructorCallNode("List", $6, $3), @1);
             else
                 $$ = AttachLocation(new ConstructorCallNode($1, $6), @1);
         }

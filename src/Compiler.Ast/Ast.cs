@@ -337,13 +337,6 @@ namespace Compiler.Ast
         public override T Accept<T>(IAstVisitor<T> visitor) => visitor.Visit(this);
     }
 
-    // List type: List[TypeNode]  
-    public record ListTypeNode(TypeNode ElementType) : TypeNode("List")
-    {
-        public override T Accept<T>(IAstVisitor<T> visitor) => visitor.Visit(this);
-    }
-
-
     public interface IAstVisitor<T>
     {
         T Visit(ProgramNode node);
@@ -370,6 +363,5 @@ namespace Compiler.Ast
         T Visit(ExpressionBodyNode node);
         T Visit(BlockBodyNode node);
         T Visit(ArrayTypeNode node);
-        T Visit(ListTypeNode node);
     }
 }

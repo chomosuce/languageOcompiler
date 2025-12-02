@@ -316,11 +316,5 @@ namespace Compiler.Ast
             return $"{Indent()}ArrayTypeNode(ElementType: {node.ElementType.Accept(this)})";
         }
 
-        public string Visit(ListTypeNode node)
-        {
-            return $"{Indent()}ListTypeNode(ElementType: {node.ElementType.Accept(this)})";
-        }
-
-        
     }
 }

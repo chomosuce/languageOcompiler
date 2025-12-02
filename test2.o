@@ -1,0 +1,24 @@
+
+class Animal is
+    this() is 
+    end
+    
+    method makeSound : Integer is 
+        return Integer(1).Print()
+    end
+end
+
+class Dog extends Animal is 
+    this() is 
+    end
+    method makeSound : Integer is 
+        return Integer(2).Print()
+    end
+
+class Main is
+    this() is
+       var pet : Animal = Dog()
+       pet.makeSound()     
+    end
+
+end

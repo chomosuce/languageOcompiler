@@ -1056,7 +1056,7 @@ public sealed class LlvmGenerator
             case "Print" when arguments.Count == 0:
             {
                 EmitIntegerPrint(context, receiver);
-                result = receiver;
+                result = new LlvmValue(string.Empty, "void", returnType);
                 return true;
             }
         }
@@ -1135,7 +1135,7 @@ public sealed class LlvmGenerator
             case "Print" when arguments.Count == 0:
             {
                 EmitRealPrint(context, receiver);
-                result = receiver;
+                result = new LlvmValue(string.Empty, "void", returnType);
                 return true;
             }
         }
@@ -1189,7 +1189,7 @@ public sealed class LlvmGenerator
             case "Print" when arguments.Count == 0:
             {
                 EmitBooleanPrint(context, receiver);
-                result = receiver;
+                result = new LlvmValue(string.Empty, "void", returnType);
                 return true;
             }
         }

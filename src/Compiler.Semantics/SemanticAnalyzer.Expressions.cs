@@ -174,7 +174,7 @@ public sealed partial class SemanticAnalyzer
                 throw new SemanticException("Print() does not accept arguments.", call);
             }
 
-            result = targetType;
+            result = TypeSymbol.Void;
             return true;
         }
 

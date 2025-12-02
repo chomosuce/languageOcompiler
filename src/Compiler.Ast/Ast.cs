@@ -252,6 +252,12 @@ namespace Compiler.Ast
         public override T Accept<T>(IAstVisitor<T> visitor) => visitor.Visit(this);
     }
 
+    // Expression used as a standalone statement (side-effect only)
+    public record ExpressionStatementNode(Expression Expression) : Statement
+    {
+        public override T Accept<T>(IAstVisitor<T> visitor) => visitor.Visit(this);
+    }
+
     // EXPRESSIONS
     
     public record IntegerLiteralNode(int Value) : Expression
@@ -351,6 +357,7 @@ namespace Compiler.Ast
         T Visit(WhileLoopNode node);
         T Visit(IfStatementNode node);
         T Visit(ReturnStatementNode node);
+        T Visit(ExpressionStatementNode node);
         T Visit(IntegerLiteralNode node);
         T Visit(RealLiteralNode node);
         T Visit(BooleanLiteralNode node);

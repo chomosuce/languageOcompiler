@@ -227,6 +227,7 @@ stmt
     | while_stmt                         { $$ = $1; }
     | if_stmt                            { $$ = $1; }
     | return_stmt                        { $$ = $1; }
+    | expr                               { $$ = AttachLocation(new ExpressionStatementNode($1), @1); }
     ;
 
 /* Assignment : Identifier := Expression */

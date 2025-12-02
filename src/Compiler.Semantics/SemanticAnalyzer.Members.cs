@@ -22,6 +22,10 @@ public sealed partial class SemanticAnalyzer
         }
 
         var fieldType = EvaluateExpression(field.InitialValue, scope, classSymbol, MethodContext.None, loopDepth: 0);
+        if (fieldType.IsVoid)
+        {
+            throw new SemanticException("Field initializer cannot have type 'void'.", field.InitialValue);
+        }
         TrackVariableType(field, fieldType);
         var symbol = new VariableSymbol(field.Name, fieldType, VariableKind.Field, field);
         classSymbol.AddField(symbol);

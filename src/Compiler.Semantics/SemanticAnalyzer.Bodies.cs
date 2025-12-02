@@ -27,6 +27,10 @@ public sealed partial class SemanticAnalyzer
                     }
 
                     var valueType = EvaluateExpression(local.InitialValue, scope, classSymbol, context, loopDepth);
+                    if (valueType.IsVoid)
+                    {
+                        throw new SemanticException($"Variable '{local.Name}' cannot be initialized with a void value.", local.InitialValue);
+                    }
                     TrackVariableType(local, valueType);
                     var symbol = new VariableSymbol(local.Name, valueType, VariableKind.Local, local);
                     scope.Declare(symbol);
@@ -68,6 +72,10 @@ public sealed partial class SemanticAnalyzer
                 AnalyzeReturnStatement(returnStatement, scope, classSymbol, context);
                 break;
 
+            case ExpressionStatementNode expressionStatement:
+                AnalyzeExpressionStatement(expressionStatement, scope, classSymbol, context, loopDepth);
+                break;
+
             default:
                 throw new SemanticException($"Unsupported statement of type '{statement.GetType().Name}'.", statement);
         }
@@ -89,7 +97,22 @@ public sealed partial class SemanticAnalyzer
             throw new SemanticException("Cannot assign to a void-typed target.", assignment.Target);
         }
 
+        if (valueType.IsVoid)
+        {
+            throw new SemanticException("Cannot assign a void value.", assignment.Value);
+        }
+
         EnsureTypesCompatible(targetType, valueType, assignment.Value);
+    }
+
+    private void AnalyzeExpressionStatement(ExpressionStatementNode statement, Scope scope, ClassSymbol classSymbol, MethodContext context, int loopDepth)
+    {
+        var type = EvaluateExpression(statement.Expression, scope, classSymbol, context, loopDepth);
+
+        if (!type.IsVoid)
+        {
+            throw new SemanticException("Expression used as a statement must not produce a value.", statement.Expression);
+        }
     }
 
     private void AnalyzeWhileLoop(WhileLoopNode loop, Scope scope, ClassSymbol classSymbol, MethodContext context, int loopDepth)

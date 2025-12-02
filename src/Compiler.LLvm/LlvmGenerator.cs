@@ -367,6 +367,12 @@ public sealed class LlvmGenerator
             return;
         }
 
+        if (semanticType.IsVoid)
+        {
+            context.Emitter.EmitRaw($"; Skipping allocation for void-typed local '{local.Name}'");
+            return;
+        }
+
         var value = EmitExpression(context, local.InitialValue);
         var slot = context.DeclareVariable(local.Name, semanticType);
         StoreValue(context, value, slot.Pointer, slot.LlvmType);
@@ -392,10 +398,19 @@ public sealed class LlvmGenerator
                 EmitReturn(context, returnStatement);
                 break;
 
+            case ExpressionStatementNode expressionStatement:
+                EmitExpressionStatement(context, expressionStatement);
+                break;
+
             default:
                 context.Emitter.EmitRaw($"; Unsupported statement '{statement.GetType().Name}'");
                 break;
         }
+    }
+
+    private void EmitExpressionStatement(FunctionContext context, ExpressionStatementNode statement)
+    {
+        _ = EmitExpression(context, statement.Expression);
     }
 
     private void EmitAssignment(FunctionContext context, AssignmentNode assignment)

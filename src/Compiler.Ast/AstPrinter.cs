@@ -224,6 +224,16 @@ namespace Compiler.Ast
             return sb.ToString();
         }
 
+        public string Visit(ExpressionStatementNode node)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"{Indent()}ExpressionStatementNode");
+            _indentLevel++;
+            sb.AppendLine(FormatProperty("Expression", node.Expression));
+            _indentLevel--;
+            return sb.ToString();
+        }
+
         public string Visit(IntegerLiteralNode node)
         {
             return $"{Indent()}IntegerLiteralNode(Value: {node.Value})";

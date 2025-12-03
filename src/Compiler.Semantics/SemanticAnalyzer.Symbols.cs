@@ -38,18 +38,16 @@ public sealed partial class SemanticAnalyzer
         private readonly Dictionary<string, VariableSymbol> _fields = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<MethodSymbol>> _methods = new(StringComparer.Ordinal);
         private readonly List<ConstructorSymbol> _constructors = new();
-
         public ClassSymbol(ClassNode node)
         {
             Node = node;
         }
-
         public ClassNode Node { get; }
-
         public string Name => Node.Name;
-
         public string? BaseClassName => Node.BaseClass;
-
+        
+        
+        
         public IReadOnlyCollection<VariableSymbol> Fields => _fields.Values;
 
         public IReadOnlyList<ConstructorSymbol> Constructors => _constructors;

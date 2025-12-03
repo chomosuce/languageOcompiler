@@ -41,13 +41,13 @@ public sealed partial class SemanticAnalyzer
         BuildSemanticModel();
     }
 
-    // Если класс объявлен повторно
     private void RegisterClasses(ProgramNode program)
     {
         foreach (var classNode in program.Classes)
         {
             if (_classes.ContainsKey(classNode.Name))
             {
+                // Если класс объявлен повторно
                 throw new SemanticException($"Class '{classNode.Name}' is already declared.", classNode);
             }
 
